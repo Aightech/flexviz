@@ -1,0 +1,59 @@
+(kicad_pcb
+  (version 20240108)
+  (generator "pcbnew")
+  (general
+    (thickness 1.6)
+  )
+  (layers
+    (0 "F.Cu" signal)
+    (31 "B.Cu" signal)
+    (44 "Edge.Cuts" user)
+    (46 "User.1" user)
+  )
+  (setup
+    (pad_to_mask_clearance 0)
+  )
+  (net 0 "")
+  (net 1 "GND")
+  (net 2 "VCC")
+
+  (gr_line
+    (start 0 0)
+    (end 100 0)
+    (stroke (width 0.1) (type solid))
+    (layer "Edge.Cuts")
+  )
+  (gr_line
+    (start 100 0)
+    (end 100 50)
+    (stroke (width 0.1) (type solid))
+    (layer "Edge.Cuts")
+  )
+  (gr_line
+    (start 100 50)
+    (end 0 50)
+    (stroke (width 0.1) (type solid))
+    (layer "Edge.Cuts")
+  )
+  (gr_line
+    (start 0 50)
+    (end 0 0)
+    (stroke (width 0.1) (type solid))
+    (layer "Edge.Cuts")
+  )
+
+  (segment
+    (start 10 25)
+    (end 90 25)
+    (width 0.5)
+    (layer "F.Cu")
+    (net 1)
+  )
+  (segment
+    (start 10 30)
+    (end 90 30)
+    (width 0.25)
+    (layer "F.Cu")
+    (net 2)
+  )
+)

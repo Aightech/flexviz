@@ -1,0 +1,148 @@
+(kicad_pcb
+  (version 20240108)
+  (generator "pcbnew")
+  (general
+    (thickness 0.2)
+  )
+  (layers
+    (0 "F.Cu" signal)
+    (31 "B.Cu" signal)
+    (44 "Edge.Cuts" user)
+    (46 "User.1" user)
+  )
+  (setup
+    (pad_to_mask_clearance 0)
+  )
+  (net 0 "")
+  (net 1 "GND")
+
+  (gr_line
+    (start 0 0)
+    (end 120 0)
+    (stroke (width 0.1) (type solid))
+    (layer "Edge.Cuts")
+  )
+  (gr_line
+    (start 120 0)
+    (end 120 30)
+    (stroke (width 0.1) (type solid))
+    (layer "Edge.Cuts")
+  )
+  (gr_line
+    (start 120 30)
+    (end 0 30)
+    (stroke (width 0.1) (type solid))
+    (layer "Edge.Cuts")
+  )
+  (gr_line
+    (start 0 30)
+    (end 0 0)
+    (stroke (width 0.1) (type solid))
+    (layer "Edge.Cuts")
+  )
+
+  (gr_line
+    (start 40 0)
+    (end 40 30)
+    (stroke (width 0.15) (type dash))
+    (layer "User.1")
+  )
+  (gr_line
+    (start 45 0)
+    (end 45 30)
+    (stroke (width 0.15) (type dash))
+    (layer "User.1")
+  )
+
+  (dimension
+    (type aligned)
+    (layer "User.1")
+    (pts
+      (xy 40 15)
+      (xy 45 15)
+    )
+    (height 5)
+    (gr_text "90°"
+      (at 42.5 10 0)
+      (layer "User.1")
+      (effects (font (size 1.5 1.5) (thickness 0.15)))
+    )
+    (format
+      (prefix "")
+      (suffix "")
+    )
+    (style
+      (thickness 0.1)
+      (arrow_length 1.27)
+      (text_position_mode 0)
+    )
+  )
+
+  (gr_line
+    (start 80 0)
+    (end 80 30)
+    (stroke (width 0.15) (type dash))
+    (layer "User.1")
+  )
+  (gr_line
+    (start 85 0)
+    (end 85 30)
+    (stroke (width 0.15) (type dash))
+    (layer "User.1")
+  )
+
+  (dimension
+    (type aligned)
+    (layer "User.1")
+    (pts
+      (xy 80 15)
+      (xy 85 15)
+    )
+    (height 5)
+    (gr_text "-45°"
+      (at 82.5 10 0)
+      (layer "User.1")
+      (effects (font (size 1.5 1.5) (thickness 0.15)))
+    )
+    (format
+      (prefix "")
+      (suffix "")
+    )
+    (style
+      (thickness 0.1)
+      (arrow_length 1.27)
+      (text_position_mode 0)
+    )
+  )
+
+  (segment
+    (start 10 15)
+    (end 110 15)
+    (width 0.3)
+    (layer "F.Cu")
+    (net 1)
+  )
+
+  (footprint "Resistor_SMD:R_0402_1005Metric"
+    (layer "F.Cu")
+    (at 20 15)
+    (property "Reference" "R1"
+      (at 0 -1.5 0)
+      (layer "F.SilkS")
+    )
+    (property "Value" "10k"
+      (at 0 1.5 0)
+      (layer "F.Fab")
+    )
+    (pad "1" smd rect
+      (at -0.5 0)
+      (size 0.5 0.5)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+    )
+    (pad "2" smd rect
+      (at 0.5 0)
+      (size 0.5 0.5)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+    )
+  )
+)
