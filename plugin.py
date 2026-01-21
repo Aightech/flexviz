@@ -97,16 +97,13 @@ class CreateFoldAction(pcbnew.ActionPlugin):
         self.icon_file_name = os.path.join(PLUGIN_DIR, "resources", "icon_create_fold.png")
 
     def Run(self):
-        wx.MessageBox(
-            "Create Fold functionality coming in Phase 4.\n\n"
-            "This will allow you to:\n"
-            "1. Click point A on the board edge\n"
-            "2. Click point B on the opposite edge\n"
-            "3. Set the fold angle\n\n"
-            "The fold marker lines will be created automatically.",
-            "Create Fold",
-            wx.OK | wx.ICON_INFORMATION
-        )
+        try:
+            from .fold_placer import run_fold_placer
+            run_fold_placer()
+        except Exception as e:
+            import traceback
+            error_msg = f"Error running Create Fold:\n\n{str(e)}\n\n{traceback.format_exc()}"
+            wx.MessageBox(error_msg, "Create Fold - Error", wx.OK | wx.ICON_ERROR)
 
 
 class OpenViewerAction(pcbnew.ActionPlugin):

@@ -200,21 +200,22 @@ This phase can be developed and tested entirely outside of KiCad.
 
 ### 4.2 Create Fold Action (`action_create_fold.py`)
 
-- [ ] Implement action plugin class
-- [ ] Launch fold placer on button click
-- [ ] Handle plugin lifecycle
+- [x] Implement action plugin class
+- [x] Launch fold placer on button click
+- [x] Handle plugin lifecycle
 
 ### 4.3 Fold Placer (`fold_placer.py`)
 
-- [ ] Enter placement mode on activation
-- [ ] Capture mouse click for point A
+- [x] Enter placement mode on activation
+- [x] Capture point A coordinates (dialog-based for reliability)
+- [x] Capture point B coordinates (dialog-based for reliability)
+- [x] Show angle input dialog after point B
+- [x] Create final geometry (2 dotted lines + dimension)
+- [ ] Interactive mouse-based placement (future enhancement)
 - [ ] Draw temporary marker at point A
 - [ ] Capture mouse move, draw preview line
-- [ ] Capture mouse click for point B
 - [ ] Handle ESC key to cancel
 - [ ] Handle right-click to cancel
-- [ ] Show angle input dialog after point B
-- [ ] Create final geometry (2 dotted lines + dimension)
 - [ ] Clean up temporary graphics
 - [ ] Update status bar messages
 
@@ -224,9 +225,7 @@ This phase can be developed and tested entirely outside of KiCad.
 - [ ] Test cancellation handling
 
 **Manual Testing:**
-- [ ] Click Create Fold, click two points, verify lines created
-- [ ] Test ESC cancellation at various stages
-- [ ] Test right-click cancellation
+- [ ] Click Create Fold, enter two points, verify lines created
 - [ ] Verify angle dialog appears and value is used
 - [ ] Verify lines are on User.1 layer
 - [ ] Verify lines are dotted style
@@ -402,6 +401,14 @@ Each phase builds on the previous. Complete all unit tests before moving to the 
 ---
 
 ## Recent Updates
+
+**2026-01-21**: Implemented Create Fold tool (Phase 4.2 & 4.3)
+- Added `fold_placer.py` with interactive fold marker creation
+- Dialog-based coordinate input for reliability across KiCad versions
+- Creates two parallel dotted lines on User.1 layer
+- Creates dimension annotation showing fold angle
+- FoldPlacerDialog for angle and radius input
+- FoldMarkerCreator class for PCB geometry creation
 
 **2026-01-21**: Fixed board triangulation with cutouts
 - Implemented clean ear clipping algorithm from Eberly's "Triangulation by Ear Clipping" paper
