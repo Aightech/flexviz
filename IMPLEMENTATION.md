@@ -107,6 +107,7 @@ This phase can be developed and tested entirely outside of KiCad.
 - [x] Generate pad meshes
 - [x] Generate component placeholder boxes
 - [x] Triangulate polygons with holes (ear clipping algorithm from Eberly's paper)
+- [x] Region-based triangulation (split board by fold lines before triangulation)
 
 **Unit Tests (`tests/test_mesh.py`):**
 - [ ] Test flat mesh generation (vertex count, face count)
@@ -401,6 +402,14 @@ Each phase builds on the previous. Complete all unit tests before moving to the 
 ---
 
 ## Recent Updates
+
+**2026-01-21**: Added region-based triangulation
+- New `region_splitter.py` module splits board into regions along fold axes
+- `split_polygon_by_line()` splits polygon along an infinite line using cross product for side detection
+- `split_board_into_regions()` divides board by all fold markers, assigns cutouts to regions
+- Updated `mesh.py` to triangulate each region separately via `create_board_mesh_with_regions()`
+- Test result: 0 triangles crossing fold lines
+- Prevents visual artifacts when board is bent in 3D (triangles no longer "jump" between planes)
 
 **2026-01-21**: Implemented Create Fold tool (Phase 4.2 & 4.3)
 - Added `fold_placer.py` with interactive fold marker creation
