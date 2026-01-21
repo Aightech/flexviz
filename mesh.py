@@ -15,6 +15,8 @@ try:
         pad_to_polygon, component_to_box
     )
     from .bend_transform import FoldDefinition, transform_point, transform_polygon
+    from .markers import FoldMarker
+    from .region_splitter import split_board_into_regions, Region
 except ImportError:
     from geometry import (
         Polygon, LineSegment, BoardGeometry, PadGeometry,
@@ -22,6 +24,8 @@ except ImportError:
         pad_to_polygon, component_to_box
     )
     from bend_transform import FoldDefinition, transform_point, transform_polygon
+    from markers import FoldMarker
+    from region_splitter import split_board_into_regions, Region
 
 
 # =============================================================================
@@ -736,6 +740,167 @@ def create_board_mesh(
     return mesh
 
 
+def create_board_mesh_with_regions(
+    outline: Polygon,
+    thickness: float,
+    folds: list[FoldDefinition] = None,
+    markers: list[FoldMarker] = None,
+    subdivide_length: float = 1.0,
+    cutouts: list[Polygon] = None
+) -> Mesh:
+    """
+    Create a 3D mesh for the board, split by fold regions.
+
+    This function splits the board into regions along fold lines and
+    triangulates each region separately. This ensures no triangles cross
+    fold boundaries, preventing visual artifacts when bending.
+
+    Args:
+        outline: Board outline polygon
+        thickness: Board thickness in mm
+        folds: List of fold definitions to apply (for 3D transform)
+        markers: List of fold markers (for region splitting)
+        subdivide_length: Maximum edge length for subdivision
+        cutouts: List of cutout polygons (holes in the board)
+
+    Returns:
+        Mesh representing the board
+    """
+    if not outline.vertices:
+        return Mesh()
+
+    # If no markers, fall back to standard meshing
+    if not markers:
+        return create_board_mesh(outline, thickness, folds, subdivide_length, cutouts)
+
+    mesh = Mesh()
+    folds = folds or []
+    cutouts = cutouts or []
+
+    # Convert outline and cutouts to lists of tuples
+    outline_verts = [(v[0], v[1]) for v in outline.vertices]
+    cutout_verts = [[(v[0], v[1]) for v in c.vertices] for c in cutouts]
+
+    # Split into regions
+    regions = split_board_into_regions(outline_verts, cutout_verts, markers)
+
+    # Process each region
+    for region in regions:
+        # Subdivide the region outline
+        region_poly = Polygon(region.outline)
+        subdivided = subdivide_polygon(region_poly, subdivide_length)
+        subdivided_verts = [(v[0], v[1]) for v in subdivided.vertices]
+
+        # Subdivide holes in this region
+        region_holes_2d = []
+        for hole in region.holes:
+            hole_poly = Polygon(hole)
+            sub_hole = subdivide_polygon(hole_poly, subdivide_length)
+            region_holes_2d.append([(v[0], v[1]) for v in sub_hole.vertices])
+
+        # Transform vertices to 3D
+        top_vertices = []
+        for v in subdivided_verts:
+            if folds:
+                v3d = transform_point(v, folds)
+            else:
+                v3d = (v[0], v[1], 0.0)
+            top_vertices.append(v3d)
+
+        bottom_vertices = [(v[0], v[1], v[2] - thickness) for v in top_vertices]
+
+        # Add outline vertices to mesh
+        n = len(top_vertices)
+        top_indices = [mesh.add_vertex(v) for v in top_vertices]
+        bottom_indices = [mesh.add_vertex(v) for v in bottom_vertices]
+
+        # Process holes for this region
+        hole_top_indices = []
+        hole_bottom_indices = []
+        hole_2d_lists = []
+
+        for hole_2d in region_holes_2d:
+            hole_top_verts = []
+            hole_bottom_verts = []
+
+            for v in hole_2d:
+                if folds:
+                    v3d = transform_point(v, folds)
+                else:
+                    v3d = (v[0], v[1], 0.0)
+                hole_top_verts.append(v3d)
+                hole_bottom_verts.append((v3d[0], v3d[1], v3d[2] - thickness))
+
+            ht_indices = [mesh.add_vertex(v) for v in hole_top_verts]
+            hb_indices = [mesh.add_vertex(v) for v in hole_bottom_verts]
+
+            hole_top_indices.append(ht_indices)
+            hole_bottom_indices.append(hb_indices)
+            hole_2d_lists.append(hole_2d)
+
+        # Triangulate this region
+        if region_holes_2d:
+            triangles, merged = triangulate_with_holes(subdivided_verts, region_holes_2d)
+
+            # Build vertex mapping
+            all_2d = list(subdivided_verts)
+            all_top = list(top_indices)
+            all_bottom = list(bottom_indices)
+
+            for h2d, ht_idx, hb_idx in zip(hole_2d_lists, hole_top_indices, hole_bottom_indices):
+                all_2d.extend(h2d)
+                all_top.extend(ht_idx)
+                all_bottom.extend(hb_idx)
+
+            # Map merged vertices to mesh indices
+            merged_top = []
+            merged_bottom = []
+            for v2d in merged:
+                found = False
+                for i, av in enumerate(all_2d):
+                    if abs(av[0] - v2d[0]) < 0.001 and abs(av[1] - v2d[1]) < 0.001:
+                        merged_top.append(all_top[i])
+                        merged_bottom.append(all_bottom[i])
+                        found = True
+                        break
+                if not found:
+                    if folds:
+                        v3d = transform_point(v2d, folds)
+                    else:
+                        v3d = (v2d[0], v2d[1], 0.0)
+                    ti = mesh.add_vertex(v3d)
+                    bi = mesh.add_vertex((v3d[0], v3d[1], v3d[2] - thickness))
+                    merged_top.append(ti)
+                    merged_bottom.append(bi)
+
+            # Add triangles
+            for tri in triangles:
+                mesh.add_triangle(merged_top[tri[0]], merged_top[tri[1]], merged_top[tri[2]], COLOR_BOARD)
+            for tri in triangles:
+                mesh.add_triangle(merged_bottom[tri[0]], merged_bottom[tri[2]], merged_bottom[tri[1]], COLOR_BOARD)
+        else:
+            # No holes in this region
+            triangles = triangulate_polygon(subdivided_verts)
+            for tri in triangles:
+                mesh.add_triangle(top_indices[tri[0]], top_indices[tri[1]], top_indices[tri[2]], COLOR_BOARD)
+            for tri in triangles:
+                mesh.add_triangle(bottom_indices[tri[0]], bottom_indices[tri[2]], bottom_indices[tri[1]], COLOR_BOARD)
+
+        # Side faces for region outline
+        for i in range(n):
+            j = (i + 1) % n
+            mesh.add_quad(top_indices[i], top_indices[j], bottom_indices[j], bottom_indices[i], COLOR_BOARD)
+
+        # Side faces for holes
+        for ht_idx, hb_idx in zip(hole_top_indices, hole_bottom_indices):
+            nh = len(ht_idx)
+            for i in range(nh):
+                j = (i + 1) % nh
+                mesh.add_quad(ht_idx[j], ht_idx[i], hb_idx[i], hb_idx[j], COLOR_CUTOUT)
+
+    return mesh
+
+
 def create_trace_mesh(
     segment: LineSegment,
     z_offset: float,
@@ -972,6 +1137,7 @@ def create_cutout_mesh(
 def create_board_geometry_mesh(
     board: BoardGeometry,
     folds: list[FoldDefinition] = None,
+    markers: list[FoldMarker] = None,
     include_traces: bool = True,
     include_pads: bool = True,
     include_components: bool = False,
@@ -983,7 +1149,8 @@ def create_board_geometry_mesh(
 
     Args:
         board: Board geometry
-        folds: List of fold definitions
+        folds: List of fold definitions (for 3D transform)
+        markers: List of fold markers (for region-based triangulation)
         include_traces: Include copper traces
         include_pads: Include pads
         include_components: Include component boxes
@@ -996,14 +1163,15 @@ def create_board_geometry_mesh(
     mesh = Mesh()
     folds = folds or []
 
-    # Board outline with cutouts
+    # Board outline with cutouts - use region-based meshing if markers provided
     if board.outline.vertices:
-        board_mesh = create_board_mesh(
+        board_mesh = create_board_mesh_with_regions(
             board.outline,
             board.thickness,
             folds,
-            subdivide_length,
-            cutouts=board.cutouts  # Pass cutouts for proper hole triangulation
+            markers=markers,
+            subdivide_length=subdivide_length,
+            cutouts=board.cutouts
         )
         mesh.merge(board_mesh)
 
