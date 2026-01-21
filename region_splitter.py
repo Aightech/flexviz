@@ -134,11 +134,40 @@ def _extend_line_to_bbox(point, direction, bbox: BoundingBox, margin=10.0):
     return (p1, p2)
 
 
+def _find_edge_intersection(p1, p2, line_point, line_dir):
+    """Find intersection point of edge p1-p2 with splitting line."""
+    ex, ey = p2[0] - p1[0], p2[1] - p1[1]
+    denom = ex * line_dir[1] - ey * line_dir[0]
+
+    if abs(denom) < 1e-10:
+        return None
+
+    s = ((line_point[0] - p1[0]) * line_dir[1] - (line_point[1] - p1[1]) * line_dir[0]) / denom
+
+    # Check if intersection is on the edge (with small tolerance)
+    if s < -1e-10 or s > 1.0 + 1e-10:
+        return None
+
+    ix = p1[0] + s * ex
+    iy = p1[1] + s * ey
+    return (ix, iy)
+
+
+def _project_onto_line(point, line_point, line_dir):
+    """Project a point onto a line and return the parameter t."""
+    dx = point[0] - line_point[0]
+    dy = point[1] - line_point[1]
+    return dx * line_dir[0] + dy * line_dir[1]
+
+
 def split_polygon_by_line(polygon: list[tuple[float, float]],
                           line_point: tuple[float, float],
-                          line_dir: tuple[float, float]) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
+                          line_dir: tuple[float, float]) -> tuple[list[list[tuple[float, float]]], list[list[tuple[float, float]]]]:
     """
-    Split a polygon into two parts along an infinite line.
+    Split a polygon into multiple parts along an infinite line.
+
+    For complex shapes (U-shaped, etc.) that cross the line multiple times,
+    this returns multiple separate polygons for each side.
 
     Args:
         polygon: List of (x, y) vertices
@@ -146,56 +175,209 @@ def split_polygon_by_line(polygon: list[tuple[float, float]],
         line_dir: Direction vector of the splitting line
 
     Returns:
-        Tuple of (left_polygon, right_polygon) where left/right are relative
-        to the line direction.
+        Tuple of (left_polygons, right_polygons) where each is a list of polygons.
+        Left/right are relative to the line direction.
     """
     if len(polygon) < 3:
-        return (polygon, [])
+        return ([polygon], [])
 
     n = len(polygon)
-    left_points = []
-    right_points = []
+    tolerance = 1e-6
+
+    # Step 1: Find all intersection points and build augmented vertex list
+    # Each entry is (point, edge_index, is_intersection, t_along_line)
+    augmented = []
+    intersections_on_line = []  # (t_value, point) for sorting
 
     for i in range(n):
         p1 = polygon[i]
         p2 = polygon[(i + 1) % n]
 
+        # Add the vertex
         side1 = _point_side_of_line(p1, line_point, line_dir)
+        augmented.append((p1, i, False, side1))
+
+        # Check for intersection
         side2 = _point_side_of_line(p2, line_point, line_dir)
 
-        # Add current point to appropriate polygon(s)
-        if side1 >= 0:
-            left_points.append(p1)
-        if side1 <= 0:
-            right_points.append(p1)
+        if (side1 > tolerance and side2 < -tolerance) or (side1 < -tolerance and side2 > tolerance):
+            intersection = _find_edge_intersection(p1, p2, line_point, line_dir)
+            if intersection:
+                t = _project_onto_line(intersection, line_point, line_dir)
+                augmented.append((intersection, i, True, 0.0))  # side = 0 (on line)
+                intersections_on_line.append((t, intersection))
 
-        # Check if edge crosses the line
-        if (side1 > 0 and side2 < 0) or (side1 < 0 and side2 > 0):
-            # Find intersection point
-            # Line through p1, p2
-            # Splitting line: line_point + t * line_dir
-            # We need to find where the edge intersects the splitting line
+    if len(intersections_on_line) < 2:
+        # No proper split - return original polygon on the appropriate side
+        centroid = _polygon_centroid(polygon)
+        side = _point_side_of_line(centroid, line_point, line_dir)
+        if side >= 0:
+            return ([polygon], [])
+        else:
+            return ([], [polygon])
 
-            # Edge direction
-            ex, ey = p2[0] - p1[0], p2[1] - p1[1]
+    # Sort intersection points along the splitting line
+    intersections_on_line.sort(key=lambda x: x[0])
 
-            # Solve: p1 + s * e = line_point + t * line_dir
-            # This is a 2D line intersection
-            denom = ex * line_dir[1] - ey * line_dir[0]
+    def points_equal(p1, p2):
+        return abs(p1[0] - p2[0]) < tolerance and abs(p1[1] - p2[1]) < tolerance
 
-            if abs(denom) > 1e-10:
-                s = ((line_point[0] - p1[0]) * line_dir[1] - (line_point[1] - p1[1]) * line_dir[0]) / denom
+    # Step 2: Build index-based partner mapping for intersections
+    # Pair consecutive intersections along the line (0-1, 2-3, 4-5, etc.)
+    # Map augmented list index -> partner augmented list index
+    intersection_indices = []  # List of augmented indices that are intersections
+    for aug_idx, (pt, _, is_intersection, _) in enumerate(augmented):
+        if is_intersection:
+            intersection_indices.append(aug_idx)
 
-                # Intersection point
-                ix = p1[0] + s * ex
-                iy = p1[1] + s * ey
-                intersection = (ix, iy)
+    # Sort intersection indices by their t-value along the line
+    intersection_indices.sort(key=lambda idx: _project_onto_line(augmented[idx][0], line_point, line_dir))
 
-                # Add intersection to both polygons
-                left_points.append(intersection)
-                right_points.append(intersection)
+    partner_map = {}  # augmented_idx -> partner_augmented_idx
+    for i in range(0, len(intersection_indices) - 1, 2):
+        idx1 = intersection_indices[i]
+        idx2 = intersection_indices[i + 1]
+        partner_map[idx1] = idx2
+        partner_map[idx2] = idx1
 
-    return (left_points, right_points)
+    # Step 3: Walk the augmented polygon and extract closed regions
+    # We need to trace both directions from intersection pairs to get both sides
+    left_polygons = []
+    right_polygons = []
+
+    # Track which (intersection_idx, direction) pairs have been used
+    used_walks = set()  # (start_aug_idx, building_left)
+
+    def trace_polygon(start_aug_idx, building_left):
+        """Trace a closed polygon starting from an intersection."""
+        start_pt = augmented[start_aug_idx][0]
+        current_polygon = [start_pt]
+        current_aug_idx = (start_aug_idx + 1) % len(augmented)
+
+        max_steps = len(augmented) * 2
+        steps = 0
+
+        while steps < max_steps:
+            steps += 1
+            pt, edge_idx, is_intersection, side = augmented[current_aug_idx]
+
+            if is_intersection:
+                if current_aug_idx == start_aug_idx:
+                    break
+
+                current_polygon.append(pt)
+
+                partner_aug_idx = partner_map.get(current_aug_idx)
+                if partner_aug_idx is not None:
+                    partner_pt = augmented[partner_aug_idx][0]
+                    current_polygon.append(partner_pt)
+
+                    if partner_aug_idx == start_aug_idx:
+                        break
+
+                    current_aug_idx = (partner_aug_idx + 1) % len(augmented)
+                else:
+                    current_aug_idx = (current_aug_idx + 1) % len(augmented)
+            else:
+                # Regular vertex - add it if on correct side
+                if (building_left and side >= -tolerance) or (not building_left and side <= tolerance):
+                    current_polygon.append(pt)
+                current_aug_idx = (current_aug_idx + 1) % len(augmented)
+
+        return current_polygon
+
+    # For each intersection pair, trace polygons for both sides
+    for i in range(0, len(intersection_indices) - 1, 2):
+        idx1 = intersection_indices[i]
+        idx2 = intersection_indices[i + 1]
+
+        # Determine which side each direction goes to
+        # From idx1 going forward: check next non-intersection vertex
+        for j in range(1, len(augmented)):
+            test_idx = (idx1 + j) % len(augmented)
+            if not augmented[test_idx][2]:  # not an intersection
+                side_from_idx1 = augmented[test_idx][3]
+                break
+        else:
+            side_from_idx1 = 0
+
+        # From idx2 going forward
+        for j in range(1, len(augmented)):
+            test_idx = (idx2 + j) % len(augmented)
+            if not augmented[test_idx][2]:
+                side_from_idx2 = augmented[test_idx][3]
+                break
+        else:
+            side_from_idx2 = 0
+
+        # Trace from idx1 (goes to side_from_idx1)
+        building_left = side_from_idx1 > 0
+        if (idx1, building_left) not in used_walks:
+            poly = trace_polygon(idx1, building_left)
+            if len(poly) >= 3:
+                if building_left:
+                    left_polygons.append(poly)
+                else:
+                    right_polygons.append(poly)
+            used_walks.add((idx1, building_left))
+
+        # Trace from idx2 (goes to side_from_idx2)
+        building_left = side_from_idx2 > 0
+        if (idx2, building_left) not in used_walks:
+            poly = trace_polygon(idx2, building_left)
+            if len(poly) >= 3:
+                if building_left:
+                    left_polygons.append(poly)
+                else:
+                    right_polygons.append(poly)
+            used_walks.add((idx2, building_left))
+
+    # Deduplicate polygons (same vertices in same or different order)
+    def remove_consecutive_duplicates(poly):
+        """Remove consecutive duplicate vertices."""
+        if not poly:
+            return poly
+        result = [poly[0]]
+        for pt in poly[1:]:
+            last = result[-1]
+            if abs(pt[0] - last[0]) > tolerance or abs(pt[1] - last[1]) > tolerance:
+                result.append(pt)
+        # Check first and last
+        if len(result) > 1:
+            if abs(result[0][0] - result[-1][0]) < tolerance and abs(result[0][1] - result[-1][1]) < tolerance:
+                result.pop()
+        return result
+
+    def polygon_signature(poly):
+        """Create a hashable signature for a polygon."""
+        if not poly:
+            return None
+        # First clean the polygon
+        cleaned = remove_consecutive_duplicates(poly)
+        if len(cleaned) < 3:
+            return None
+        # Normalize: find min point, rotate to start there
+        min_idx = 0
+        min_pt = cleaned[0]
+        for i, pt in enumerate(cleaned):
+            if (pt[0], pt[1]) < (min_pt[0], min_pt[1]):
+                min_pt = pt
+                min_idx = i
+        rotated = cleaned[min_idx:] + cleaned[:min_idx]
+        # Round to avoid floating point issues
+        return tuple((round(p[0], 6), round(p[1], 6)) for p in rotated)
+
+    def deduplicate(polygons):
+        seen = set()
+        result = []
+        for poly in polygons:
+            sig = polygon_signature(poly)
+            if sig and sig not in seen:
+                seen.add(sig)
+                result.append(poly)
+        return result
+
+    return (deduplicate(left_polygons), deduplicate(right_polygons))
 
 
 def _polygon_centroid(polygon: list[tuple[float, float]]) -> tuple[float, float]:
@@ -300,15 +482,19 @@ def split_board_into_regions(
         new_polygons = []
 
         for poly in current_polygons:
-            left, right = split_polygon_by_line(poly, line_point, line_dir)
+            left_polys, right_polys = split_polygon_by_line(poly, line_point, line_dir)
 
-            left = _clean_polygon(left)
-            right = _clean_polygon(right)
+            # Add all left-side polygons
+            for left in left_polys:
+                cleaned = _clean_polygon(left)
+                if cleaned:
+                    new_polygons.append(cleaned)
 
-            if left:
-                new_polygons.append(left)
-            if right:
-                new_polygons.append(right)
+            # Add all right-side polygons
+            for right in right_polys:
+                cleaned = _clean_polygon(right)
+                if cleaned:
+                    new_polygons.append(cleaned)
 
         current_polygons = new_polygons
 
