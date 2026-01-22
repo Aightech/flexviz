@@ -582,6 +582,717 @@ def generate_hole_inside_polygon(outer, hole_radius, max_attempts=100):
 
 
 # =============================================================================
+# Planar Subdivision for Bend Zone Regions
+# =============================================================================
+
+def line_from_two_points(p1, p2):
+    """
+    Create line equation ax + by + c = 0 from two points.
+    Returns (a, b, c) normalized so that (a, b) is unit length.
+    """
+    dx = p2[0] - p1[0]
+    dy = p2[1] - p1[1]
+    # Normal to line direction
+    a = -dy
+    b = dx
+    length = math.sqrt(a*a + b*b)
+    if length < 1e-10:
+        return (0, 0, 0)
+    a /= length
+    b /= length
+    c = -(a * p1[0] + b * p1[1])
+    return (a, b, c)
+
+
+def signed_distance_to_line(point, line):
+    """Signed distance from point to line (a, b, c)."""
+    a, b, c = line
+    return a * point[0] + b * point[1] + c
+
+
+def segment_line_intersection(seg_start, seg_end, line):
+    """
+    Find intersection of segment with infinite line.
+    Returns (t, point) where t is parameter [0,1] on segment, or None if no intersection.
+    """
+    d1 = signed_distance_to_line(seg_start, line)
+    d2 = signed_distance_to_line(seg_end, line)
+
+    # Both on same side - no intersection
+    if d1 * d2 > 1e-10:
+        return None
+
+    # Both on the line
+    if abs(d1) < 1e-10 and abs(d2) < 1e-10:
+        return None  # Collinear, treat as no single intersection
+
+    # One endpoint on line
+    if abs(d1) < 1e-10:
+        return (0.0, seg_start)
+    if abs(d2) < 1e-10:
+        return (1.0, seg_end)
+
+    # Proper intersection
+    t = d1 / (d1 - d2)
+    px = seg_start[0] + t * (seg_end[0] - seg_start[0])
+    py = seg_start[1] + t * (seg_end[1] - seg_start[1])
+    return (t, (px, py))
+
+
+def points_equal(p1, p2, eps=1e-9):
+    """Check if two points are equal within epsilon."""
+    return abs(p1[0] - p2[0]) < eps and abs(p1[1] - p2[1]) < eps
+
+
+def normalize_angle(angle):
+    """Normalize angle to [0, 2*pi)."""
+    while angle < 0:
+        angle += 2 * math.pi
+    while angle >= 2 * math.pi:
+        angle -= 2 * math.pi
+    return angle
+
+
+class PlanarSubdivision:
+    """
+    Computes regions by partitioning a polygon (with holes) using cutting lines.
+
+    Uses boundary tracing: treats all edges (outer, holes, cutting lines) as a
+    planar graph and traces faces.
+    """
+
+    def __init__(self, outer, holes, cutting_lines):
+        """
+        Args:
+            outer: Outer boundary polygon (CCW)
+            holes: List of hole polygons (CW)
+            cutting_lines: List of (line_eq, p1, p2) where line_eq is (a,b,c)
+                          and p1,p2 are points defining extent
+        """
+        self.outer = ensure_ccw(outer)
+        self.holes = [ensure_cw(h) for h in holes]
+        self.cutting_lines = cutting_lines
+
+        # Will be populated by compute()
+        self.vertices = []  # List of (x, y) vertices
+        self.vertex_to_idx = {}  # (x, y) -> index
+        self.edges = []  # List of (start_idx, end_idx)
+        self.vertex_edges = {}  # vertex_idx -> list of (angle, edge_idx, direction)
+        self.regions = []  # List of region boundaries
+
+    def _add_vertex(self, point):
+        """Add vertex and return its index."""
+        # Round to avoid floating point issues
+        key = (round(point[0], 9), round(point[1], 9))
+        if key in self.vertex_to_idx:
+            return self.vertex_to_idx[key]
+        idx = len(self.vertices)
+        self.vertices.append(point)
+        self.vertex_to_idx[key] = idx
+        return idx
+
+    def _add_edge(self, start_idx, end_idx):
+        """Add edge between two vertices."""
+        if start_idx == end_idx:
+            return
+        # Avoid duplicate edges
+        edge = (min(start_idx, end_idx), max(start_idx, end_idx))
+        if edge not in [(min(e[0], e[1]), max(e[0], e[1])) for e in self.edges]:
+            self.edges.append((start_idx, end_idx))
+
+    def _collect_polygon_edges(self, polygon, cutting_lines):
+        """
+        Collect edges from a polygon, splitting at cutting line intersections.
+        Returns list of (start_point, end_point) edges.
+        """
+        edges = []
+        n = len(polygon)
+
+        for i in range(n):
+            seg_start = polygon[i]
+            seg_end = polygon[(i + 1) % n]
+
+            # Find all intersections with cutting lines
+            intersections = []
+            for line_eq, _, _ in cutting_lines:
+                result = segment_line_intersection(seg_start, seg_end, line_eq)
+                if result is not None:
+                    t, point = result
+                    if 0 < t < 1:  # Proper intersection (not at endpoints)
+                        intersections.append((t, point))
+
+            # Sort by parameter t
+            intersections.sort(key=lambda x: x[0])
+
+            # Create sub-edges
+            current = seg_start
+            for _, int_point in intersections:
+                if not points_equal(current, int_point):
+                    edges.append((current, int_point))
+                current = int_point
+            if not points_equal(current, seg_end):
+                edges.append((current, seg_end))
+
+        return edges
+
+    def _collect_cutting_line_segments(self, line_eq, line_p1, line_p2, all_polygons):
+        """
+        Collect segments of cutting line that are inside the board.
+        The cutting line is clipped to polygon intersections.
+        """
+        # Find all intersections of cutting line with all polygon edges
+        intersections = []
+
+        for polygon in all_polygons:
+            n = len(polygon)
+            for i in range(n):
+                seg_start = polygon[i]
+                seg_end = polygon[(i + 1) % n]
+                result = segment_line_intersection(seg_start, seg_end, line_eq)
+                if result is not None:
+                    _, point = result
+                    intersections.append(point)
+
+        if len(intersections) < 2:
+            return []
+
+        # Sort intersections along the line direction
+        line_dir = (line_p2[0] - line_p1[0], line_p2[1] - line_p1[1])
+        def project(p):
+            return (p[0] - line_p1[0]) * line_dir[0] + (p[1] - line_p1[1]) * line_dir[1]
+
+        intersections.sort(key=project)
+
+        # Remove duplicates
+        unique = [intersections[0]]
+        for p in intersections[1:]:
+            if not points_equal(p, unique[-1]):
+                unique.append(p)
+
+        # Create segments between consecutive intersections that are inside the board
+        segments = []
+        for i in range(len(unique) - 1):
+            p1, p2 = unique[i], unique[i + 1]
+            mid = ((p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2)
+
+            # Check if midpoint is inside outer and outside all holes
+            if point_in_polygon(mid, self.outer):
+                inside_hole = False
+                for hole in self.holes:
+                    if point_in_polygon(mid, hole):
+                        inside_hole = True
+                        break
+                if not inside_hole:
+                    segments.append((p1, p2))
+
+        return segments
+
+    def compute(self, debug=False):
+        """Compute the planar subdivision and extract regions."""
+        # Step 1: Collect all edges
+        all_polygons = [self.outer] + self.holes
+
+        # Edges from outer boundary
+        outer_edges = self._collect_polygon_edges(self.outer, self.cutting_lines)
+
+        # Edges from holes
+        hole_edges = []
+        for hole in self.holes:
+            hole_edges.extend(self._collect_polygon_edges(hole, self.cutting_lines))
+
+        # Edges from cutting lines
+        cutting_edges = []
+        for line_eq, p1, p2 in self.cutting_lines:
+            segments = self._collect_cutting_line_segments(line_eq, p1, p2, all_polygons)
+            cutting_edges.extend(segments)
+
+        if debug:
+            print(f"  Outer edges: {len(outer_edges)}")
+            print(f"  Hole edges: {len(hole_edges)}")
+            print(f"  Cutting edges: {len(cutting_edges)}")
+            for i, (s, e) in enumerate(cutting_edges):
+                print(f"    Cut {i}: ({s[0]:.1f}, {s[1]:.1f}) -> ({e[0]:.1f}, {e[1]:.1f})")
+
+        # Step 2: Build vertex and edge lists
+        all_edges = outer_edges + hole_edges + cutting_edges
+
+        for start, end in all_edges:
+            start_idx = self._add_vertex(start)
+            end_idx = self._add_vertex(end)
+            self._add_edge(start_idx, end_idx)
+
+        if debug:
+            print(f"  Total vertices: {len(self.vertices)}")
+            print(f"  Total edges: {len(self.edges)}")
+
+        # Step 3: Build adjacency - for each vertex, list edges in angular order
+        self.vertex_edges = {i: [] for i in range(len(self.vertices))}
+
+        for edge_idx, (start_idx, end_idx) in enumerate(self.edges):
+            start = self.vertices[start_idx]
+            end = self.vertices[end_idx]
+
+            # Angle from start to end
+            angle_forward = math.atan2(end[1] - start[1], end[0] - start[0])
+            # Angle from end to start
+            angle_backward = math.atan2(start[1] - end[1], start[0] - end[0])
+
+            self.vertex_edges[start_idx].append((angle_forward, edge_idx, 'forward'))
+            self.vertex_edges[end_idx].append((angle_backward, edge_idx, 'backward'))
+
+        # Sort edges at each vertex by angle
+        for v_idx in self.vertex_edges:
+            self.vertex_edges[v_idx].sort(key=lambda x: x[0])
+
+        if debug:
+            print("  Vertex adjacency:")
+            for v_idx, edges in self.vertex_edges.items():
+                if len(edges) > 2:  # Only show interesting vertices
+                    print(f"    Vertex {v_idx} ({self.vertices[v_idx][0]:.1f}, {self.vertices[v_idx][1]:.1f}): {len(edges)} edges")
+
+        # Step 4: Trace regions
+        self._trace_regions()
+
+        return self.regions
+
+    def _trace_regions(self):
+        """Trace all region boundaries using the 'next CCW edge' rule."""
+        # Track which (edge, direction) pairs have been used
+        used = set()
+
+        for edge_idx in range(len(self.edges)):
+            for direction in ['forward', 'backward']:
+                if (edge_idx, direction) in used:
+                    continue
+
+                # Trace a region starting from this edge
+                region = self._trace_one_region(edge_idx, direction, used)
+                if region and len(region) >= 3:
+                    self.regions.append(region)
+
+    def _trace_one_region(self, start_edge_idx, start_direction, used):
+        """
+        Trace one region boundary starting from given edge and direction.
+
+        Uses the standard planar subdivision face tracing: at each vertex,
+        take the next edge in CLOCKWISE order (the rightmost turn).
+        This ensures we trace the face to the RIGHT of each directed edge.
+        """
+        boundary = []
+
+        current_edge = start_edge_idx
+        current_dir = start_direction
+
+        max_steps = len(self.edges) * 2 + 10
+        steps = 0
+
+        while steps < max_steps:
+            steps += 1
+
+            if (current_edge, current_dir) in used:
+                if current_edge == start_edge_idx and current_dir == start_direction and len(boundary) > 0:
+                    # Completed the loop
+                    break
+                else:
+                    # Hit an already-used edge - shouldn't happen in valid planar graph
+                    break
+
+            used.add((current_edge, current_dir))
+
+            # Get start and end vertices based on direction
+            edge_start, edge_end = self.edges[current_edge]
+            if current_dir == 'forward':
+                from_v, to_v = edge_start, edge_end
+            else:
+                from_v, to_v = edge_end, edge_start
+
+            boundary.append(self.vertices[from_v])
+
+            # Find next edge: at to_v, find the next edge in CLOCKWISE order
+            # (this traces the face to the right of our current directed edge)
+            incoming_angle = math.atan2(
+                self.vertices[to_v][1] - self.vertices[from_v][1],
+                self.vertices[to_v][0] - self.vertices[from_v][0]
+            )
+
+            # We want to find the edge that, when leaving to_v, is the "rightmost turn"
+            # This is the edge whose angle is just BEFORE our reversed incoming angle (CW)
+            # Reversed incoming = incoming + π = direction we came FROM as seen from to_v
+            reversed_incoming = incoming_angle + math.pi
+
+            edges_at_v = self.vertex_edges[to_v]
+            if len(edges_at_v) == 0:
+                break
+
+            # Sort edges by their angular distance from reversed_incoming, going CW (decreasing angle)
+            # The next edge CW is the one with largest angle that is still < reversed_incoming
+            # Or if none, wrap around to the largest angle overall
+
+            best_edge_idx = None
+            best_dir = None
+            best_angle_diff = float('inf')
+
+            for angle, e_idx, e_dir in edges_at_v:
+                # Skip the edge we just came from
+                if e_idx == current_edge:
+                    # Check if this is the reverse direction (we don't want to go back)
+                    actual_dir = e_dir
+                    if current_dir == 'forward' and actual_dir == 'backward':
+                        continue
+                    if current_dir == 'backward' and actual_dir == 'forward':
+                        continue
+
+                # Calculate CW distance from reversed_incoming to this edge's angle
+                # CW distance = (reversed_incoming - angle) mod 2π
+                diff = reversed_incoming - angle
+                while diff < 0:
+                    diff += 2 * math.pi
+                while diff >= 2 * math.pi:
+                    diff -= 2 * math.pi
+
+                # We want the smallest positive CW distance (but > 0 to not include the reverse)
+                if diff > 1e-9 and diff < best_angle_diff:
+                    best_angle_diff = diff
+                    best_edge_idx = e_idx
+                    best_dir = e_dir
+
+            if best_edge_idx is None:
+                # Fallback: take any edge that's not going back
+                for angle, e_idx, e_dir in edges_at_v:
+                    if e_idx != current_edge:
+                        best_edge_idx = e_idx
+                        best_dir = e_dir
+                        break
+                if best_edge_idx is None:
+                    break
+
+            # Move to next edge
+            current_edge = best_edge_idx
+            current_dir = best_dir
+
+            # Check if we've returned to start
+            if current_edge == start_edge_idx and current_dir == start_direction:
+                break
+
+        return boundary
+
+
+def create_parallel_cutting_lines(y1, y2, x_extent):
+    """
+    Create two horizontal parallel cutting lines at y=y1 and y=y2.
+
+    Returns list of (line_eq, p1, p2) tuples.
+    """
+    lines = []
+
+    # Line at y = y1: equation is 0*x + 1*y - y1 = 0 -> (0, 1, -y1)
+    line1 = (0, 1, -y1)
+    p1_1 = (x_extent[0] - 10, y1)
+    p1_2 = (x_extent[1] + 10, y1)
+    lines.append((line1, p1_1, p1_2))
+
+    # Line at y = y2
+    line2 = (0, 1, -y2)
+    p2_1 = (x_extent[0] - 10, y2)
+    p2_2 = (x_extent[1] + 10, y2)
+    lines.append((line2, p2_1, p2_2))
+
+    return lines
+
+
+def region_centroid(region):
+    """Calculate centroid of a region."""
+    if len(region) == 0:
+        return (0, 0)
+    cx = sum(v[0] for v in region) / len(region)
+    cy = sum(v[1] for v in region) / len(region)
+    return (cx, cy)
+
+
+def get_interior_test_point(region):
+    """
+    Get a point that is definitely inside the region.
+
+    Uses the midpoint of the first edge, offset slightly inward.
+    """
+    if len(region) < 3:
+        return region_centroid(region)
+
+    # For a CCW polygon, "inward" is to the left of each edge
+    # For a CW polygon, "inward" is to the right
+    # We determine this by the signed area
+
+    area = signed_area(region)
+
+    # Try multiple edges to find a good test point
+    for i in range(len(region)):
+        p1 = region[i]
+        p2 = region[(i + 1) % len(region)]
+
+        # Midpoint of edge
+        mid_x = (p1[0] + p2[0]) / 2
+        mid_y = (p1[1] + p2[1]) / 2
+
+        # Edge direction
+        dx = p2[0] - p1[0]
+        dy = p2[1] - p1[1]
+        length = math.sqrt(dx*dx + dy*dy)
+        if length < 1e-10:
+            continue
+
+        # Normal direction (perpendicular to edge)
+        # For CCW polygon (positive area), inward is to the left: (-dy, dx)
+        # For CW polygon (negative area), inward is to the right: (dy, -dx)
+        if area > 0:
+            nx, ny = -dy / length, dx / length
+        else:
+            nx, ny = dy / length, -dx / length
+
+        # Offset slightly inward (1% of edge length or 0.1 units)
+        offset = min(length * 0.01, 0.1)
+        test_x = mid_x + nx * offset
+        test_y = mid_y + ny * offset
+
+        # Verify this point is inside the region
+        if point_in_polygon((test_x, test_y), region):
+            return (test_x, test_y)
+
+    # Fallback to centroid
+    return region_centroid(region)
+
+
+def filter_valid_board_regions(regions, outer, holes):
+    """
+    Filter regions to only include valid board material regions.
+
+    A valid region must:
+    - Have positive signed area (CCW winding = filled region)
+    - Have a test point that is inside the outer boundary
+    - Have a test point that is outside all holes
+    """
+    outer_ccw = ensure_ccw(outer)
+    holes_cw = [ensure_cw(h) for h in holes]
+
+    valid_regions = []
+    for region in regions:
+        if len(region) < 3:
+            continue
+
+        # Only keep CCW regions (positive area = filled interior)
+        area = signed_area(region)
+        if area <= 0:
+            continue
+
+        # Use an interior test point
+        test_point = get_interior_test_point(region)
+
+        # Must be inside outer boundary
+        if not point_in_polygon(test_point, outer_ccw):
+            continue
+
+        # Must be outside all holes
+        inside_hole = False
+        for hole in holes_cw:
+            if point_in_polygon(test_point, hole):
+                inside_hole = True
+                break
+
+        if not inside_hole:
+            valid_regions.append(region)
+
+    return valid_regions
+
+
+def hole_crosses_cutting_lines(hole, cutting_lines):
+    """Check if a hole crosses any of the cutting lines."""
+    for line_eq, _, _ in cutting_lines:
+        # Check if any edge of the hole crosses the line
+        n = len(hole)
+        for i in range(n):
+            seg_start = hole[i]
+            seg_end = hole[(i + 1) % n]
+            d1 = signed_distance_to_line(seg_start, line_eq)
+            d2 = signed_distance_to_line(seg_end, line_eq)
+            # If signs differ, the edge crosses the line
+            if d1 * d2 < -1e-10:
+                return True
+    return False
+
+
+def associate_holes_with_regions(valid_regions, original_holes, cutting_lines):
+    """
+    Associate holes that don't cross cutting lines with their containing region.
+
+    Returns a list of (region, [holes]) tuples.
+    """
+    # For each region, find holes that are entirely inside it
+    region_holes = [[] for _ in valid_regions]
+
+    for hole in original_holes:
+        # Skip holes that cross cutting lines - they're already incorporated
+        if hole_crosses_cutting_lines(hole, cutting_lines):
+            continue
+
+        # Find which region contains this hole
+        hole_centroid = region_centroid(hole)
+
+        for i, region in enumerate(valid_regions):
+            if point_in_polygon(hole_centroid, region):
+                region_holes[i].append(hole)
+                break
+
+    return list(zip(valid_regions, region_holes))
+
+
+def triangulate_regions(regions_with_holes):
+    """
+    Triangulate each region with its associated holes.
+
+    Args:
+        regions_with_holes: List of (region_boundary, [holes]) tuples
+
+    Returns:
+        List of (region_boundary, holes, triangles, vertices) tuples
+    """
+    results = []
+
+    for region, holes in regions_with_holes:
+        if len(region) < 3:
+            continue
+
+        # Triangulate using ear clipping with holes
+        triangles, merged_polygon = triangulate_with_holes(region, holes)
+
+        results.append({
+            'boundary': region,
+            'holes': holes,
+            'triangles': triangles,
+            'vertices': merged_polygon,
+            'area': signed_area(region)
+        })
+
+    return results
+
+
+def plot_triangulated_regions(triangulation_results, cutting_lines, title="Triangulated Regions", filename=None):
+    """Plot triangulated regions with different colors per region."""
+    fig, ax = plt.subplots(1, 1, figsize=(14, 10))
+
+    # Color palette for regions
+    region_colors = plt.cm.tab10(np.linspace(0, 1, max(len(triangulation_results), 10)))
+
+    for region_idx, result in enumerate(triangulation_results):
+        vertices = result['vertices']
+        triangles = result['triangles']
+        region_color = region_colors[region_idx % len(region_colors)]
+
+        # Plot triangles
+        for tri_idx, (a, b, c) in enumerate(triangles):
+            tri_verts = [vertices[a], vertices[b], vertices[c]]
+            # Slightly vary the color for each triangle
+            shade = 0.7 + 0.3 * (tri_idx % 3) / 3
+            tri = MplPolygon(tri_verts, closed=True,
+                           facecolor=(*region_color[:3], 0.4 * shade),
+                           edgecolor=(*region_color[:3], 0.8),
+                           linewidth=0.5)
+            ax.add_patch(tri)
+
+        # Plot region boundary
+        boundary = result['boundary']
+        boundary_closed = list(boundary) + [boundary[0]]
+        xs, ys = zip(*boundary_closed)
+        ax.plot(xs, ys, '-', color=region_color, linewidth=2,
+                label=f'Region {region_idx+1} ({len(triangles)} tris)')
+
+        # Plot holes
+        for hole in result['holes']:
+            hole_closed = list(hole) + [hole[0]]
+            xs, ys = zip(*hole_closed)
+            ax.plot(xs, ys, '--', color=region_color, linewidth=1.5)
+
+    # Plot cutting lines
+    line_labels_added = False
+    for line_eq, p1, p2 in cutting_lines:
+        label = 'Cutting line' if not line_labels_added else None
+        ax.plot([p1[0], p2[0]], [p1[1], p2[1]], 'k--', linewidth=2, label=label)
+        line_labels_added = True
+
+    ax.set_aspect('equal')
+    total_tris = sum(len(r['triangles']) for r in triangulation_results)
+    ax.set_title(f"{title} ({len(triangulation_results)} regions, {total_tris} triangles)")
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc='upper left', fontsize=8)
+    ax.autoscale()
+
+    if filename:
+        plt.savefig(filename, dpi=150, bbox_inches='tight')
+        print(f"Saved to {filename}")
+    plt.show()
+
+
+def plot_regions(regions, cutting_lines, title="Regions", filename=None, outer=None, holes=None):
+    """Plot regions with different colors and show cutting lines."""
+    fig, ax = plt.subplots(1, 1, figsize=(12, 10))
+
+    # Color palette for regions
+    colors = plt.cm.tab10(np.linspace(0, 1, max(len(regions), 10)))
+
+    for i, region in enumerate(regions):
+        if len(region) < 3:
+            continue
+
+        # Calculate region area
+        area = signed_area(region)
+
+        # Plot region
+        region_closed = list(region) + [region[0]]
+        xs, ys = zip(*region_closed)
+
+        color = colors[i % len(colors)]
+        ax.fill(xs, ys, alpha=0.4, color=color, label=f'Region {i+1} (area={area:.1f})')
+        ax.plot(xs, ys, '-', color=color, linewidth=2)
+
+        # Mark vertices with small dots
+        for v in region:
+            ax.plot(v[0], v[1], 'o', color=color, markersize=4)
+
+        # Mark centroid
+        centroid = region_centroid(region)
+        ax.plot(centroid[0], centroid[1], 'x', color=color, markersize=10, markeredgewidth=2)
+
+    # Plot cutting lines
+    line_labels_added = False
+    for line_eq, p1, p2 in cutting_lines:
+        label = 'Cutting line' if not line_labels_added else None
+        ax.plot([p1[0], p2[0]], [p1[1], p2[1]], 'k--', linewidth=2, label=label)
+        line_labels_added = True
+
+    # Plot outer boundary if provided
+    if outer is not None:
+        outer_closed = list(outer) + [outer[0]]
+        xs, ys = zip(*outer_closed)
+        ax.plot(xs, ys, 'b-', linewidth=3, alpha=0.5, label='Outer boundary')
+
+    # Plot holes if provided
+    if holes is not None:
+        for hole in holes:
+            hole_closed = list(hole) + [hole[0]]
+            xs, ys = zip(*hole_closed)
+            ax.plot(xs, ys, 'r-', linewidth=2, alpha=0.5)
+
+    ax.set_aspect('equal')
+    ax.set_title(f"{title} ({len(regions)} regions)")
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc='upper left', fontsize=8)
+    ax.autoscale()
+
+    if filename:
+        plt.savefig(filename, dpi=150, bbox_inches='tight')
+        print(f"Saved to {filename}")
+    plt.show()
+
+
+# =============================================================================
 # Main
 # =============================================================================
 
@@ -621,6 +1332,7 @@ def main():
             print(f"Hole 2: {len(hole2)} vertices")
 
     print(f"\nTotal holes: {len(holes)}")
+    original_holes = holes.copy()  # Save a copy for later use
 
     # Plot original
     plot_polygon_with_holes(outer, holes, "Board with Holes", "/tmp/01_board_outline.png")
@@ -649,6 +1361,244 @@ def main():
 
     print(f"\nBad triangles (inside holes): {bad_triangles}")
     print(f"Result: {'PASS' if bad_triangles == 0 else 'FAIL'}")
+
+    # =========================================================================
+    # Test Planar Subdivision with Cutting Lines
+    # =========================================================================
+    print("\n" + "="*60)
+    print("Testing Planar Subdivision with Cutting Lines")
+    print("="*60)
+
+    # Create a simple rectangular board with a cutout
+    board_outer = [
+        (10, 10),
+        (90, 10),
+        (90, 70),
+        (10, 70)
+    ]
+
+    # Cutout that spans across one cutting line
+    board_hole = [
+        (35, 35),
+        (55, 35),
+        (55, 55),
+        (35, 55)
+    ]
+
+    # Create two parallel horizontal cutting lines
+    x_extent = (0, 100)
+    cutting_lines = create_parallel_cutting_lines(y1=30, y2=60, x_extent=x_extent)
+
+    print(f"Board outer: {len(board_outer)} vertices")
+    print(f"Board hole: {len(board_hole)} vertices")
+    print(f"Cutting lines: {len(cutting_lines)}")
+    print(f"  Line 1: y = 30")
+    print(f"  Line 2: y = 60")
+
+    # Compute planar subdivision
+    subdivision = PlanarSubdivision(board_outer, [board_hole], cutting_lines)
+    regions = subdivision.compute(debug=False)
+
+    print(f"\nComputed {len(regions)} total regions:")
+    for i, region in enumerate(regions):
+        area = signed_area(region)
+        print(f"  Region {i+1}: {len(region)} vertices, area = {area:.1f}")
+
+    # Filter to valid board regions only
+    valid_regions = filter_valid_board_regions(regions, board_outer, [board_hole])
+    print(f"\nFiltered to {len(valid_regions)} valid board regions:")
+    for i, region in enumerate(valid_regions):
+        area = signed_area(region)
+        print(f"  Region {i+1}: {len(region)} vertices, area = {area:.1f}")
+
+    # Plot the regions
+    plot_regions(valid_regions, cutting_lines, "Board with Cutting Lines",
+                 "/tmp/03_regions.png", outer=board_outer, holes=[board_hole])
+
+    # Associate holes and triangulate
+    regions_with_holes = associate_holes_with_regions(valid_regions, [board_hole], cutting_lines)
+    print(f"\nHole association:")
+    for i, (region, holes) in enumerate(regions_with_holes):
+        print(f"  Region {i+1}: {len(holes)} holes")
+
+    triangulation_results = triangulate_regions(regions_with_holes)
+    print(f"\nTriangulation:")
+    for i, result in enumerate(triangulation_results):
+        print(f"  Region {i+1}: {len(result['triangles'])} triangles")
+
+    plot_triangulated_regions(triangulation_results, cutting_lines,
+                              "Triangulated Board", "/tmp/03_triangulated.png")
+
+    # =========================================================================
+    # Test with hole crossing a cutting line
+    # =========================================================================
+    print("\n" + "="*60)
+    print("Testing with Hole Crossing Cutting Line")
+    print("="*60)
+
+    # Cutout that crosses the lower cutting line (y=30)
+    board_hole_crossing = [
+        (60, 20),
+        (80, 20),
+        (80, 45),
+        (60, 45)
+    ]
+
+    subdivision2 = PlanarSubdivision(board_outer, [board_hole_crossing], cutting_lines)
+    regions2 = subdivision2.compute()
+
+    print(f"\nComputed {len(regions2)} total regions:")
+    for i, region in enumerate(regions2):
+        area = signed_area(region)
+        print(f"  Region {i+1}: {len(region)} vertices, area = {area:.1f}")
+
+    valid_regions2 = filter_valid_board_regions(regions2, board_outer, [board_hole_crossing])
+    print(f"\nFiltered to {len(valid_regions2)} valid board regions:")
+    for i, region in enumerate(valid_regions2):
+        area = signed_area(region)
+        print(f"  Region {i+1}: {len(region)} vertices, area = {area:.1f}")
+
+    plot_regions(valid_regions2, cutting_lines, "Hole Crossing Cutting Line",
+                 "/tmp/04_regions_crossing.png", outer=board_outer, holes=[board_hole_crossing])
+
+    # =========================================================================
+    # Test with multiple holes
+    # =========================================================================
+    print("\n" + "="*60)
+    print("Testing with Multiple Holes")
+    print("="*60)
+
+    holes_multi = [
+        [(20, 15), (30, 15), (30, 25), (20, 25)],  # Below first cut
+        [(60, 20), (75, 20), (75, 45), (60, 45)],  # Crosses first cut
+        [(25, 62), (40, 62), (40, 68), (25, 68)],  # Above second cut
+    ]
+
+    subdivision3 = PlanarSubdivision(board_outer, holes_multi, cutting_lines)
+    regions3 = subdivision3.compute()
+
+    print(f"\nComputed {len(regions3)} total regions:")
+    for i, region in enumerate(regions3):
+        area = signed_area(region)
+        print(f"  Region {i+1}: {len(region)} vertices, area = {area:.1f}")
+
+    valid_regions3 = filter_valid_board_regions(regions3, board_outer, holes_multi)
+    print(f"\nFiltered to {len(valid_regions3)} valid board regions:")
+    for i, region in enumerate(valid_regions3):
+        area = signed_area(region)
+        print(f"  Region {i+1}: {len(region)} vertices, area = {area:.1f}")
+
+    plot_regions(valid_regions3, cutting_lines, "Multiple Holes",
+                 "/tmp/05_regions_multi.png", outer=board_outer, holes=holes_multi)
+
+    # =========================================================================
+    # Test with Cutout Spanning Both Cutting Lines
+    # =========================================================================
+    print("\n" + "="*60)
+    print("Testing with Cutout Spanning Both Cutting Lines")
+    print("="*60)
+
+    # Cutout that spans both cutting lines (y=30 and y=60)
+    # This should split the middle region into left and right parts
+    board_hole_spanning = [
+        (40, 20),   # Below first cut
+        (60, 20),
+        (60, 65),   # Above second cut
+        (40, 65)
+    ]
+
+    print(f"Hole spans from y=20 to y=65 (crosses both y=30 and y=60)")
+
+    subdivision4 = PlanarSubdivision(board_outer, [board_hole_spanning], cutting_lines)
+    regions4 = subdivision4.compute(debug=False)
+
+    print(f"\nComputed {len(regions4)} total regions:")
+    for i, region in enumerate(regions4):
+        area = signed_area(region)
+        print(f"  Region {i+1}: {len(region)} vertices, area = {area:.1f}")
+
+    valid_regions4 = filter_valid_board_regions(regions4, board_outer, [board_hole_spanning])
+    print(f"\nFiltered to {len(valid_regions4)} valid board regions:")
+    for i, region in enumerate(valid_regions4):
+        area = signed_area(region)
+        print(f"  Region {i+1}: {len(region)} vertices, area = {area:.1f}")
+
+    plot_regions(valid_regions4, cutting_lines, "Cutout Spanning Both Lines",
+                 "/tmp/06_regions_spanning.png", outer=board_outer, holes=[board_hole_spanning])
+
+    # Associate holes and triangulate
+    regions_with_holes4 = associate_holes_with_regions(valid_regions4, [board_hole_spanning], cutting_lines)
+    print(f"\nHole association:")
+    for i, (region, holes) in enumerate(regions_with_holes4):
+        print(f"  Region {i+1}: {len(holes)} holes")
+
+    triangulation_results4 = triangulate_regions(regions_with_holes4)
+    print(f"\nTriangulation:")
+    for i, result in enumerate(triangulation_results4):
+        print(f"  Region {i+1}: {len(result['triangles'])} triangles")
+
+    plot_triangulated_regions(triangulation_results4, cutting_lines,
+                              "Triangulated Spanning Cutout", "/tmp/06_triangulated.png")
+
+    # =========================================================================
+    # Test on Original Random Board with Holes
+    # =========================================================================
+    print("\n" + "="*60)
+    print("Testing on Original Random Board with Holes")
+    print("="*60)
+
+    # Use the random board generated earlier
+    print(f"Outer polygon: {len(outer)} vertices")
+    print(f"Holes: {len(original_holes)}")
+
+    # Create cutting lines based on the board's bounding box
+    min_y = min(v[1] for v in outer)
+    max_y = max(v[1] for v in outer)
+    min_x = min(v[0] for v in outer)
+    max_x = max(v[0] for v in outer)
+
+    # Two horizontal cutting lines at 1/3 and 2/3 of the board height
+    y1 = min_y + (max_y - min_y) * 0.35
+    y2 = min_y + (max_y - min_y) * 0.65
+
+    print(f"Board Y range: {min_y:.1f} to {max_y:.1f}")
+    print(f"Cutting lines at y={y1:.1f} and y={y2:.1f}")
+
+    cutting_lines_random = create_parallel_cutting_lines(y1, y2, (min_x - 10, max_x + 10))
+
+    subdivision5 = PlanarSubdivision(outer, original_holes, cutting_lines_random)
+    regions5 = subdivision5.compute(debug=False)
+
+    print(f"\nComputed {len(regions5)} total regions:")
+    for i, region in enumerate(regions5):
+        area = signed_area(region)
+        print(f"  Region {i+1}: {len(region)} vertices, area = {area:.1f}")
+
+    valid_regions5 = filter_valid_board_regions(regions5, outer, original_holes)
+    print(f"\nFiltered to {len(valid_regions5)} valid board regions:")
+    total_area = 0
+    for i, region in enumerate(valid_regions5):
+        area = signed_area(region)
+        total_area += area
+        print(f"  Region {i+1}: {len(region)} vertices, area = {area:.1f}")
+    print(f"Total area of valid regions: {total_area:.1f}")
+
+    plot_regions(valid_regions5, cutting_lines_random, "Random Board with Cutting Lines",
+                 "/tmp/07_regions_random.png", outer=outer, holes=original_holes)
+
+    # Associate holes and triangulate
+    regions_with_holes5 = associate_holes_with_regions(valid_regions5, original_holes, cutting_lines_random)
+    print(f"\nHole association:")
+    for i, (region, region_holes) in enumerate(regions_with_holes5):
+        print(f"  Region {i+1}: {len(region_holes)} holes")
+
+    triangulation_results5 = triangulate_regions(regions_with_holes5)
+    print(f"\nTriangulation:")
+    for i, result in enumerate(triangulation_results5):
+        print(f"  Region {i+1}: {len(result['triangles'])} triangles")
+
+    plot_triangulated_regions(triangulation_results5, cutting_lines_random,
+                              "Triangulated Random Board", "/tmp/07_triangulated.png")
 
 
 if __name__ == "__main__":
