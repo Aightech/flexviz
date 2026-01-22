@@ -16,11 +16,17 @@ try:
     from .bend_transform import FoldDefinition, create_fold_definitions
     from .geometry import BoardGeometry
     from .markers import FoldMarker
+    from .config import FlexConfig, FLEX_THICKNESS_PRESETS, STIFFENER_THICKNESS_PRESETS
+    from .kicad_parser import KiCadPCB
+    from .stiffener import extract_stiffeners
 except ImportError:
     from mesh import Mesh, create_board_geometry_mesh
     from bend_transform import FoldDefinition, create_fold_definitions
     from geometry import BoardGeometry
     from markers import FoldMarker
+    from config import FlexConfig, FLEX_THICKNESS_PRESETS, STIFFENER_THICKNESS_PRESETS
+    from kicad_parser import KiCadPCB
+    from stiffener import extract_stiffeners
 
 
 class GLCanvas(glcanvas.GLCanvas):
@@ -281,7 +287,7 @@ class GLCanvas(glcanvas.GLCanvas):
             if self.mouse_mode == 'rotate':
                 self.camera_rot_z += dx * 0.5
                 self.camera_rot_x += dy * 0.5
-                self.camera_rot_x = max(-90, min(90, self.camera_rot_x))
+                # Allow full rotation (no clamping) to view from below
 
             elif self.mouse_mode == 'pan':
                 scale = self.camera_distance * 0.002
@@ -373,11 +379,12 @@ class FoldSlider(wx.Panel):
 class FlexViewerFrame(wx.Frame):
     """Main viewer window."""
 
-    def __init__(self, parent=None, board_geometry=None, fold_markers=None):
+    def __init__(self, parent=None, board_geometry=None, fold_markers=None,
+                 config: FlexConfig = None, pcb: KiCadPCB = None, pcb_filepath: str = None):
         super().__init__(
             parent,
             title="Flex PCB Viewer",
-            size=(1000, 700),
+            size=(1100, 750),
             style=wx.DEFAULT_FRAME_STYLE
         )
 
@@ -385,6 +392,32 @@ class FlexViewerFrame(wx.Frame):
         self.fold_markers = fold_markers or []
         self.folds = create_fold_definitions(self.fold_markers)
         self.fold_sliders = []
+
+        # Config and PCB reference
+        self.pcb = pcb
+        self.pcb_filepath = pcb_filepath
+
+        # Load saved config or use provided/default
+        if config:
+            self.config = config
+        elif pcb_filepath:
+            # Try to load saved settings for this PCB
+            self.config = FlexConfig.load_for_pcb(pcb_filepath)
+        else:
+            self.config = FlexConfig()
+
+        # Always get flex thickness from PCB board settings (read-only)
+        if self.pcb:
+            board_info = self.pcb.get_board_info()
+            if board_info.thickness > 0:
+                self.config.flex_thickness = board_info.thickness
+
+        # Get available user layers from PCB
+        self.available_layers = []
+        if self.pcb:
+            self.available_layers = self.pcb.get_user_layers()
+        if not self.available_layers:
+            self.available_layers = ["User.1", "User.2", "User.3", "User.4"]
 
         self.init_ui()
         self.update_mesh()
@@ -427,6 +460,11 @@ class FlexViewerFrame(wx.Frame):
         display_box = wx.StaticBox(control_panel, label="Display Options")
         display_sizer = wx.StaticBoxSizer(display_box, wx.VERTICAL)
 
+        self.cb_bend = wx.CheckBox(control_panel, label="Bend")
+        self.cb_bend.SetValue(True)
+        self.cb_bend.Bind(wx.EVT_CHECKBOX, self.on_display_option_changed)
+        display_sizer.Add(self.cb_bend, 0, wx.ALL, 5)
+
         self.cb_wireframe = wx.CheckBox(control_panel, label="Show Wireframe")
         self.cb_wireframe.Bind(wx.EVT_CHECKBOX, self.on_wireframe_toggle)
         display_sizer.Add(self.cb_wireframe, 0, wx.ALL, 5)
@@ -446,7 +484,103 @@ class FlexViewerFrame(wx.Frame):
         self.cb_components.Bind(wx.EVT_CHECKBOX, self.on_display_option_changed)
         display_sizer.Add(self.cb_components, 0, wx.ALL, 5)
 
+        self.cb_stiffeners = wx.CheckBox(control_panel, label="Show Stiffeners")
+        self.cb_stiffeners.SetValue(True)
+        self.cb_stiffeners.Bind(wx.EVT_CHECKBOX, self.on_display_option_changed)
+        display_sizer.Add(self.cb_stiffeners, 0, wx.ALL, 5)
+
+        self.cb_debug_regions = wx.CheckBox(control_panel, label="Debug Regions")
+        self.cb_debug_regions.SetValue(False)
+        self.cb_debug_regions.Bind(wx.EVT_CHECKBOX, self.on_display_option_changed)
+        display_sizer.Add(self.cb_debug_regions, 0, wx.ALL, 5)
+
         control_sizer.Add(display_sizer, 0, wx.EXPAND | wx.ALL, 5)
+
+        # PCB Settings
+        settings_box = wx.StaticBox(control_panel, label="PCB Settings")
+        settings_sizer = wx.StaticBoxSizer(settings_box, wx.VERTICAL)
+
+        # PCB thickness (read-only, from board settings)
+        flex_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        flex_sizer.Add(wx.StaticText(control_panel, label="PCB thickness:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
+        self.label_flex_thickness = wx.StaticText(control_panel, label=f"{self.config.flex_thickness:.2f} mm")
+        self.label_flex_thickness.SetFont(self.label_flex_thickness.GetFont().Bold())
+        flex_sizer.Add(self.label_flex_thickness, 0, wx.ALIGN_CENTER_VERTICAL)
+        settings_sizer.Add(flex_sizer, 0, wx.ALL, 3)
+
+        # Bend subdivisions
+        subdiv_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        subdiv_sizer.Add(wx.StaticText(control_panel, label="Bend quality:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
+        self.spin_subdivisions = wx.SpinCtrl(
+            control_panel,
+            value=str(self.config.bend_subdivisions),
+            min=1, max=32,
+            size=(50, -1)
+        )
+        self.spin_subdivisions.Bind(wx.EVT_SPINCTRL, self.on_settings_changed)
+        subdiv_sizer.Add(self.spin_subdivisions, 0, wx.RIGHT, 3)
+        subdiv_sizer.Add(wx.StaticText(control_panel, label="strips"), 0, wx.ALIGN_CENTER_VERTICAL)
+        settings_sizer.Add(subdiv_sizer, 0, wx.ALL, 3)
+
+        control_sizer.Add(settings_sizer, 0, wx.EXPAND | wx.ALL, 5)
+
+        # Stiffener Settings
+        stiffener_box = wx.StaticBox(control_panel, label="Stiffener")
+        stiffener_sizer = wx.StaticBoxSizer(stiffener_box, wx.VERTICAL)
+
+        # Stiffener layer
+        stiff_layer_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        stiff_layer_sizer.Add(wx.StaticText(control_panel, label="Layer:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
+        self.choice_stiffener_layer = wx.Choice(control_panel, choices=self.available_layers, size=(80, -1))
+        if self.config.stiffener_layer in self.available_layers:
+            self.choice_stiffener_layer.SetSelection(self.available_layers.index(self.config.stiffener_layer))
+        elif self.available_layers:
+            self.choice_stiffener_layer.SetSelection(0)
+        self.choice_stiffener_layer.Bind(wx.EVT_CHOICE, self.on_settings_changed)
+        stiff_layer_sizer.Add(self.choice_stiffener_layer, 0)
+        stiffener_sizer.Add(stiff_layer_sizer, 0, wx.ALL, 3)
+
+        # Stiffener thickness
+        stiff_thick_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        stiff_thick_sizer.Add(wx.StaticText(control_panel, label="Thickness:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
+        self.spin_stiffener_thickness = wx.SpinCtrlDouble(
+            control_panel,
+            value=str(self.config.stiffener_thickness),
+            min=0.0, max=2.0, inc=0.1,
+            size=(60, -1)
+        )
+        self.spin_stiffener_thickness.SetDigits(2)
+        self.spin_stiffener_thickness.Bind(wx.EVT_SPINCTRLDOUBLE, self.on_settings_changed)
+        stiff_thick_sizer.Add(self.spin_stiffener_thickness, 0, wx.RIGHT, 3)
+        stiff_thick_sizer.Add(wx.StaticText(control_panel, label="mm"), 0, wx.ALIGN_CENTER_VERTICAL)
+        stiffener_sizer.Add(stiff_thick_sizer, 0, wx.ALL, 3)
+
+        # Stiffener side
+        stiff_side_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        stiff_side_sizer.Add(wx.StaticText(control_panel, label="Side:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
+        self.radio_stiff_top = wx.RadioButton(control_panel, label="Top", style=wx.RB_GROUP)
+        self.radio_stiff_bottom = wx.RadioButton(control_panel, label="Bottom")
+        if self.config.stiffener_side == "top":
+            self.radio_stiff_top.SetValue(True)
+        else:
+            self.radio_stiff_bottom.SetValue(True)
+        self.radio_stiff_top.Bind(wx.EVT_RADIOBUTTON, self.on_settings_changed)
+        self.radio_stiff_bottom.Bind(wx.EVT_RADIOBUTTON, self.on_settings_changed)
+        stiff_side_sizer.Add(self.radio_stiff_top, 0, wx.RIGHT, 5)
+        stiff_side_sizer.Add(self.radio_stiff_bottom, 0)
+        stiffener_sizer.Add(stiff_side_sizer, 0, wx.ALL, 3)
+
+        # Stiffener status label
+        self.label_stiffener_status = wx.StaticText(control_panel, label="")
+        self.label_stiffener_status.SetForegroundColour(wx.Colour(128, 128, 128))
+        stiffener_sizer.Add(self.label_stiffener_status, 0, wx.LEFT | wx.BOTTOM, 5)
+
+        control_sizer.Add(stiffener_sizer, 0, wx.EXPAND | wx.ALL, 5)
+
+        # Save settings button
+        btn_save_settings = wx.Button(control_panel, label="Save Settings")
+        btn_save_settings.Bind(wx.EVT_BUTTON, self.on_save_settings)
+        control_sizer.Add(btn_save_settings, 0, wx.ALL | wx.EXPAND, 5)
 
         # Buttons
         btn_sizer = wx.BoxSizer(wx.HORIZONTAL)
@@ -488,8 +622,8 @@ class FlexViewerFrame(wx.Frame):
 
         # Set up splitter
         splitter.SplitVertically(self.canvas, control_panel)
-        splitter.SetSashPosition(700)
-        splitter.SetMinimumPaneSize(200)
+        splitter.SetSashPosition(800)
+        splitter.SetMinimumPaneSize(250)
 
     def update_mesh(self):
         """Regenerate mesh with current fold angles."""
@@ -501,6 +635,35 @@ class FlexViewerFrame(wx.Frame):
             if i < len(self.folds):
                 self.folds[i].angle = math.radians(slider.get_angle())
 
+        # Extract stiffeners if PCB, config available, and display enabled
+        stiffeners = None
+        show_stiffeners = self.cb_stiffeners.GetValue() if hasattr(self, 'cb_stiffeners') else True
+
+        # Update stiffener status label
+        if hasattr(self, 'label_stiffener_status'):
+            if not self.pcb:
+                self.label_stiffener_status.SetLabel("(No PCB loaded)")
+                self.label_stiffener_status.SetForegroundColour(wx.Colour(128, 128, 128))
+            elif not self.config.has_stiffener:
+                self.label_stiffener_status.SetLabel("(Set thickness > 0)")
+                self.label_stiffener_status.SetForegroundColour(wx.Colour(128, 128, 128))
+            elif not show_stiffeners:
+                self.label_stiffener_status.SetLabel("(Display disabled)")
+                self.label_stiffener_status.SetForegroundColour(wx.Colour(128, 128, 128))
+            else:
+                stiffeners = extract_stiffeners(self.pcb, self.config)
+                if stiffeners:
+                    self.label_stiffener_status.SetLabel(f"Found {len(stiffeners)} region(s)")
+                    self.label_stiffener_status.SetForegroundColour(wx.Colour(0, 128, 0))  # Green
+                else:
+                    self.label_stiffener_status.SetLabel(f"No shapes on {self.config.stiffener_layer}")
+                    self.label_stiffener_status.SetForegroundColour(wx.Colour(200, 100, 0))  # Orange
+        elif self.pcb and self.config.has_stiffener and show_stiffeners:
+            stiffeners = extract_stiffeners(self.pcb, self.config)
+
+        # Check if bending is enabled
+        bend_enabled = self.cb_bend.GetValue() if hasattr(self, 'cb_bend') else True
+
         # Generate mesh
         mesh = create_board_geometry_mesh(
             self.board_geometry,
@@ -508,7 +671,11 @@ class FlexViewerFrame(wx.Frame):
             markers=self.fold_markers,
             include_traces=self.cb_traces.GetValue() if hasattr(self, 'cb_traces') else True,
             include_pads=self.cb_pads.GetValue() if hasattr(self, 'cb_pads') else True,
-            include_components=self.cb_components.GetValue() if hasattr(self, 'cb_components') else False
+            include_components=self.cb_components.GetValue() if hasattr(self, 'cb_components') else False,
+            num_bend_subdivisions=self.config.bend_subdivisions if hasattr(self, 'config') else 1,
+            stiffeners=stiffeners,
+            debug_regions=self.cb_debug_regions.GetValue() if hasattr(self, 'cb_debug_regions') else False,
+            apply_bend=bend_enabled
         )
 
         self.canvas.set_mesh(mesh)
@@ -526,6 +693,66 @@ class FlexViewerFrame(wx.Frame):
     def on_display_option_changed(self, event):
         """Handle display option change."""
         self.update_mesh()
+
+    def on_settings_changed(self, event):
+        """Handle PCB settings change."""
+        # Update config from UI (flex_thickness is read-only from board settings)
+        layer_idx = self.choice_stiffener_layer.GetSelection()
+        if layer_idx >= 0 and layer_idx < len(self.available_layers):
+            self.config.stiffener_layer = self.available_layers[layer_idx]
+
+        self.config.stiffener_thickness = self.spin_stiffener_thickness.GetValue()
+        self.config.stiffener_side = "top" if self.radio_stiff_top.GetValue() else "bottom"
+        self.config.bend_subdivisions = self.spin_subdivisions.GetValue()
+
+        # Auto-save settings if we have a PCB filepath
+        if self.pcb_filepath:
+            try:
+                self.config.save_for_pcb(self.pcb_filepath)
+            except Exception:
+                pass  # Silently ignore save errors during auto-save
+
+        # Refresh mesh with new settings
+        self.update_mesh()
+
+    def on_save_settings(self, event):
+        """Save settings to file."""
+        if self.pcb_filepath:
+            try:
+                self.config.save_for_pcb(self.pcb_filepath)
+                wx.MessageBox(
+                    f"Settings saved for:\n{self.pcb_filepath}",
+                    "Settings Saved",
+                    wx.OK | wx.ICON_INFORMATION
+                )
+            except Exception as e:
+                wx.MessageBox(
+                    f"Error saving settings:\n{e}",
+                    "Save Error",
+                    wx.OK | wx.ICON_ERROR
+                )
+        else:
+            # No PCB file, save to a chosen location
+            with wx.FileDialog(
+                self,
+                "Save Settings",
+                wildcard="JSON files (*.json)|*.json",
+                style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT
+            ) as dialog:
+                if dialog.ShowModal() == wx.ID_OK:
+                    try:
+                        self.config.save(dialog.GetPath())
+                        wx.MessageBox(
+                            f"Settings saved to:\n{dialog.GetPath()}",
+                            "Settings Saved",
+                            wx.OK | wx.ICON_INFORMATION
+                        )
+                    except Exception as e:
+                        wx.MessageBox(
+                            f"Error saving settings:\n{e}",
+                            "Save Error",
+                            wx.OK | wx.ICON_ERROR
+                        )
 
     def on_refresh(self, event):
         """Handle refresh button."""
@@ -583,7 +810,14 @@ class FlexViewerFrame(wx.Frame):
                 wx.MessageBox(f"Exported to:\n{path}", "Export Complete", wx.OK | wx.ICON_INFORMATION)
 
 
-def show_viewer(board_geometry: BoardGeometry, fold_markers: list = None, standalone: bool = False):
+def show_viewer(
+    board_geometry: BoardGeometry,
+    fold_markers: list = None,
+    standalone: bool = False,
+    config: FlexConfig = None,
+    pcb: KiCadPCB = None,
+    pcb_filepath: str = None
+):
     """
     Show the flex viewer window.
 
@@ -591,14 +825,23 @@ def show_viewer(board_geometry: BoardGeometry, fold_markers: list = None, standa
         board_geometry: Board geometry to display
         fold_markers: List of fold markers
         standalone: If True, create wx.App (for standalone testing)
+        config: Flex configuration (optional, uses defaults if not provided)
+        pcb: Parsed KiCad PCB for layer queries (optional)
+        pcb_filepath: Path to PCB file for saving settings (optional)
     """
     if standalone:
         app = wx.App()
-        frame = FlexViewerFrame(None, board_geometry, fold_markers)
+        frame = FlexViewerFrame(
+            None, board_geometry, fold_markers,
+            config=config, pcb=pcb, pcb_filepath=pcb_filepath
+        )
         frame.Show()
         app.MainLoop()
     else:
-        frame = FlexViewerFrame(None, board_geometry, fold_markers)
+        frame = FlexViewerFrame(
+            None, board_geometry, fold_markers,
+            config=config, pcb=pcb, pcb_filepath=pcb_filepath
+        )
         frame.Show()
 
 
@@ -607,6 +850,7 @@ if __name__ == "__main__":
     from kicad_parser import KiCadPCB
     from markers import detect_fold_markers
     from geometry import extract_geometry
+    from config import FlexConfig
 
     # Test with sample file
     import os
@@ -617,10 +861,15 @@ if __name__ == "__main__":
         geom = extract_geometry(pcb)
         markers = detect_fold_markers(pcb)
 
+        # Load or create config
+        config = FlexConfig.load_for_pcb(test_file)
+
         print(f"Loaded: {test_file}")
         print(f"  Outline: {len(geom.outline)} vertices")
         print(f"  Folds: {len(markers)}")
+        print(f"  User layers: {pcb.get_user_layers()}")
+        print(f"  Config: flex={config.flex_thickness}mm, stiffener={config.stiffener_thickness}mm")
 
-        show_viewer(geom, markers, standalone=True)
+        show_viewer(geom, markers, standalone=True, config=config, pcb=pcb, pcb_filepath=test_file)
     else:
         print(f"Test file not found: {test_file}")

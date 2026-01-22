@@ -1601,5 +1601,231 @@ def main():
                               "Triangulated Random Board", "/tmp/07_triangulated.png")
 
 
+def test_bend_zone_subdivision():
+    """
+    Test subdividing a bend zone into multiple thin strips for smooth bending.
+
+    When a board bends, the bend zone (area between the two fold lines) needs
+    to be subdivided into multiple thin strips to render a smooth curve.
+    This test verifies that the PlanarSubdivision handles many parallel
+    cutting lines correctly.
+    """
+    print("\n" + "="*60)
+    print("Testing Bend Zone Subdivision")
+    print("="*60)
+
+    # Simple rectangular board: 100x80
+    board_outer = [(0, 0), (100, 0), (100, 80), (0, 80)]
+
+    # -------------------------------------------------------------------------
+    # Test 1: Subdivide bend zone into 4 strips (no holes)
+    # -------------------------------------------------------------------------
+    print("\n--- Test 1: 4 subdivisions, no holes ---")
+
+    # Bend zone from y=30 to y=50 (width=20)
+    # Subdivide into 4 strips of width 5 each
+    num_subdivisions = 4
+    y_start, y_end = 30, 50
+    step = (y_end - y_start) / num_subdivisions
+
+    cutting_lines = []
+    for i in range(num_subdivisions + 1):
+        y = y_start + i * step
+        line_eq = (0, 1, -y)  # y = const: 0*x + 1*y - y = 0
+        p1, p2 = (-10, y), (110, y)
+        cutting_lines.append((line_eq, p1, p2))
+
+    print(f"Bend zone: y={y_start} to y={y_end}")
+    print(f"Cutting lines at: {[y_start + i * step for i in range(num_subdivisions + 1)]}")
+
+    subdivision = PlanarSubdivision(board_outer, [], cutting_lines)
+    regions = subdivision.compute()
+    valid_regions = filter_valid_board_regions(regions, board_outer, [])
+
+    # Expected: 1 (before) + 4 (bend strips) + 1 (after) = 6 regions
+    expected_regions = num_subdivisions + 2
+    print(f"Expected regions: {expected_regions}")
+    print(f"Actual regions: {len(valid_regions)}")
+
+    if len(valid_regions) == expected_regions:
+        print("✓ PASS: Correct number of regions")
+    else:
+        print("✗ FAIL: Wrong number of regions")
+
+    # Verify strip heights by calculating areas
+    # Each bend strip should have area = 100 * 5 = 500
+    # Before strip: 100 * 30 = 3000
+    # After strip: 100 * 30 = 3000
+    print("\nRegion areas:")
+    for i, region in enumerate(valid_regions):
+        area = abs(signed_area(region))
+        print(f"  Region {i+1}: area = {area:.1f}")
+
+    # Plot
+    plot_regions(valid_regions, cutting_lines, "Bend Zone Subdivision (4 strips)",
+                 "/tmp/08_bend_zone_4strips.png", outer=board_outer)
+
+    # -------------------------------------------------------------------------
+    # Test 2: Subdivide with 8 strips (finer subdivision)
+    # -------------------------------------------------------------------------
+    print("\n--- Test 2: 8 subdivisions, no holes ---")
+
+    num_subdivisions = 8
+    step = (y_end - y_start) / num_subdivisions
+
+    cutting_lines = []
+    for i in range(num_subdivisions + 1):
+        y = y_start + i * step
+        line_eq = (0, 1, -y)
+        p1, p2 = (-10, y), (110, y)
+        cutting_lines.append((line_eq, p1, p2))
+
+    subdivision = PlanarSubdivision(board_outer, [], cutting_lines)
+    regions = subdivision.compute()
+    valid_regions = filter_valid_board_regions(regions, board_outer, [])
+
+    expected_regions = num_subdivisions + 2  # 10 regions
+    print(f"Expected regions: {expected_regions}")
+    print(f"Actual regions: {len(valid_regions)}")
+
+    if len(valid_regions) == expected_regions:
+        print("✓ PASS: Correct number of regions")
+    else:
+        print("✗ FAIL: Wrong number of regions")
+
+    plot_regions(valid_regions, cutting_lines, "Bend Zone Subdivision (8 strips)",
+                 "/tmp/09_bend_zone_8strips.png", outer=board_outer)
+
+    # -------------------------------------------------------------------------
+    # Test 3: Subdivide with hole entirely in bend zone
+    # -------------------------------------------------------------------------
+    print("\n--- Test 3: 4 subdivisions with hole in bend zone ---")
+
+    num_subdivisions = 4
+    step = (y_end - y_start) / num_subdivisions
+
+    cutting_lines = []
+    for i in range(num_subdivisions + 1):
+        y = y_start + i * step
+        line_eq = (0, 1, -y)
+        p1, p2 = (-10, y), (110, y)
+        cutting_lines.append((line_eq, p1, p2))
+
+    # Hole entirely within the bend zone (y=35 to y=45)
+    hole_in_bend = [(40, 36), (60, 36), (60, 44), (40, 44)]
+
+    subdivision = PlanarSubdivision(board_outer, [hole_in_bend], cutting_lines)
+    regions = subdivision.compute()
+    valid_regions = filter_valid_board_regions(regions, board_outer, [hole_in_bend])
+
+    print(f"Hole: y=36 to y=44 (entirely within one strip)")
+    print(f"Regions: {len(valid_regions)}")
+
+    # The hole should be associated with the strip containing it
+    regions_with_holes = associate_holes_with_regions(valid_regions, [hole_in_bend], cutting_lines)
+    for i, (region, holes) in enumerate(regions_with_holes):
+        if holes:
+            print(f"  Region {i+1} has {len(holes)} hole(s)")
+
+    plot_regions(valid_regions, cutting_lines, "Bend Zone with Hole Inside",
+                 "/tmp/10_bend_zone_hole_inside.png", outer=board_outer, holes=[hole_in_bend])
+
+    # Triangulate and verify
+    triangulation_results = triangulate_regions(regions_with_holes)
+    total_triangles = sum(len(r['triangles']) for r in triangulation_results)
+    print(f"Total triangles: {total_triangles}")
+
+    # -------------------------------------------------------------------------
+    # Test 4: Subdivide with hole crossing multiple strips
+    # -------------------------------------------------------------------------
+    print("\n--- Test 4: 4 subdivisions with hole crossing strips ---")
+
+    # Hole crossing multiple strips (y=32 to y=48, crosses 3 internal lines)
+    hole_crossing = [(30, 32), (70, 32), (70, 48), (30, 48)]
+
+    subdivision = PlanarSubdivision(board_outer, [hole_crossing], cutting_lines)
+    regions = subdivision.compute()
+    valid_regions = filter_valid_board_regions(regions, board_outer, [hole_crossing])
+
+    print(f"Hole: y=32 to y=48 (crosses multiple strip boundaries)")
+    print(f"Regions: {len(valid_regions)}")
+
+    # When a hole crosses cutting lines, it creates more regions
+    # The middle strips get split into left and right parts around the hole
+    for i, region in enumerate(valid_regions):
+        area = abs(signed_area(region))
+        print(f"  Region {i+1}: area = {area:.1f}")
+
+    plot_regions(valid_regions, cutting_lines, "Bend Zone with Hole Crossing Strips",
+                 "/tmp/11_bend_zone_hole_crossing.png", outer=board_outer, holes=[hole_crossing])
+
+    # Triangulate
+    regions_with_holes = associate_holes_with_regions(valid_regions, [hole_crossing], cutting_lines)
+    triangulation_results = triangulate_regions(regions_with_holes)
+
+    plot_triangulated_regions(triangulation_results, cutting_lines,
+                              "Triangulated Bend Zone with Crossing Hole",
+                              "/tmp/11_bend_zone_hole_crossing_tri.png")
+
+    total_triangles = sum(len(r['triangles']) for r in triangulation_results)
+    print(f"Total triangles: {total_triangles}")
+
+    # -------------------------------------------------------------------------
+    # Test 5: Non-horizontal cutting lines (angled fold)
+    # -------------------------------------------------------------------------
+    print("\n--- Test 5: Angled cutting lines (30° fold) ---")
+
+    import math as m
+    angle = m.radians(30)  # 30 degrees from horizontal
+
+    # Direction vector for the cutting lines
+    dx, dy = m.cos(angle), m.sin(angle)
+
+    # Create 5 parallel cutting lines (4 subdivisions)
+    # Lines pass through points offset perpendicular to the direction
+    center = (50, 40)  # Center of bend zone
+    perp = (-dy, dx)   # Perpendicular direction
+    half_width = 15    # Half-width of bend zone
+    num_subdivisions = 4
+
+    cutting_lines = []
+    for i in range(num_subdivisions + 1):
+        t = -half_width + (i / num_subdivisions) * (2 * half_width)
+        # Point on this cutting line
+        px = center[0] + t * perp[0]
+        py = center[1] + t * perp[1]
+        # Line equation: -dy*x + dx*y + (dy*px - dx*py) = 0
+        a, b, c = -dy, dx, dy * px - dx * py
+        # Extend line to board bounds
+        p1 = (px - 100 * dx, py - 100 * dy)
+        p2 = (px + 100 * dx, py + 100 * dy)
+        cutting_lines.append(((a, b, c), p1, p2))
+
+    print(f"Fold angle: 30°")
+    print(f"Bend zone center: {center}")
+    print(f"Bend zone width: {2 * half_width}")
+
+    subdivision = PlanarSubdivision(board_outer, [], cutting_lines)
+    regions = subdivision.compute()
+    valid_regions = filter_valid_board_regions(regions, board_outer, [])
+
+    expected_regions = num_subdivisions + 2
+    print(f"Expected regions: {expected_regions}")
+    print(f"Actual regions: {len(valid_regions)}")
+
+    if len(valid_regions) == expected_regions:
+        print("✓ PASS: Correct number of regions")
+    else:
+        print("✗ FAIL: Wrong number of regions")
+
+    plot_regions(valid_regions, cutting_lines, "Angled Bend Zone (30°)",
+                 "/tmp/12_bend_zone_angled.png", outer=board_outer)
+
+    print("\n" + "="*60)
+    print("Bend Zone Subdivision Tests Complete")
+    print("="*60)
+
+
 if __name__ == "__main__":
     main()
+    test_bend_zone_subdivision()

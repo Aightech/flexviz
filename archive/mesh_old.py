@@ -15,7 +15,9 @@ try:
         pad_to_polygon, component_to_box
     )
     from .bend_transform import (
-        FoldDefinition, FoldRecipe, transform_point, compute_normal, transform_point_and_normal
+        FoldDefinition, transform_point, transform_polygon, transform_point_with_normal,
+        transform_point_with_regions, compute_surface_normal_with_regions, compute_surface_normal,
+        transform_point_with_recipe, compute_surface_normal_with_recipe
     )
     from .markers import FoldMarker
     from .planar_subdivision import split_board_into_regions, Region, find_containing_region
@@ -26,7 +28,9 @@ except ImportError:
         pad_to_polygon, component_to_box
     )
     from bend_transform import (
-        FoldDefinition, FoldRecipe, transform_point, compute_normal, transform_point_and_normal
+        FoldDefinition, transform_point, transform_polygon, transform_point_with_normal,
+        transform_point_with_regions, compute_surface_normal_with_regions, compute_surface_normal,
+        transform_point_with_recipe, compute_surface_normal_with_recipe
     )
     from markers import FoldMarker
     from planar_subdivision import split_board_into_regions, Region, find_containing_region
@@ -594,18 +598,21 @@ DEBUG_REGION_COLORS = [
 
 
 # =============================================================================
-# Helper Functions for Transformation
+# Helper Functions for Unified Transformation
 # =============================================================================
 
-def get_region_recipe(region: Region) -> FoldRecipe:
+def get_region_fold_recipe(region: Region) -> list[tuple[FoldDefinition, str]]:
     """
-    Get the fold recipe for a region.
+    Extract fold recipe with classifications from a region.
+
+    Returns the full recipe including classifications (IN_ZONE, AFTER)
+    so transformations use the region's classification, not geometric re-classification.
 
     Args:
         region: Region object with fold_recipe attribute
 
     Returns:
-        FoldRecipe (list of (FoldDefinition, classification) tuples)
+        List of (FoldDefinition, classification) tuples
     """
     if not hasattr(region, 'fold_recipe') or not region.fold_recipe:
         return []
@@ -613,34 +620,135 @@ def get_region_recipe(region: Region) -> FoldRecipe:
             for fm, classification in region.fold_recipe]
 
 
+def get_region_folds(region: Region) -> list[FoldDefinition]:
+    """
+    Extract fold definitions from a region's fold recipe (without classifications).
+
+    DEPRECATED: Use get_region_fold_recipe() instead to preserve classifications.
+
+    Args:
+        region: Region object with fold_recipe attribute
+
+    Returns:
+        List of FoldDefinition objects in the correct order
+    """
+    if not hasattr(region, 'fold_recipe') or not region.fold_recipe:
+        return []
+    return [FoldDefinition.from_marker(fm) for fm, _ in region.fold_recipe]
+
+
+def get_folds_for_point(
+    point: tuple[float, float],
+    regions: list[Region]
+) -> list[FoldDefinition]:
+    """
+    Find which region contains a point and return its applicable folds.
+
+    DEPRECATED: Use get_recipe_for_point() instead to preserve classifications.
+
+    Args:
+        point: 2D point (x, y)
+        regions: List of Region objects
+
+    Returns:
+        List of FoldDefinition objects for the containing region
+    """
+    if not regions:
+        return []
+
+    containing_region = find_containing_region(point, regions)
+    if containing_region is None:
+        return []
+
+    return get_region_folds(containing_region)
+
+
+def get_recipe_for_point(
+    point: tuple[float, float],
+    regions: list[Region]
+) -> list[tuple[FoldDefinition, str]]:
+    """
+    Find which region contains a point and return its fold recipe with classifications.
+
+    Args:
+        point: 2D point (x, y)
+        regions: List of Region objects
+
+    Returns:
+        List of (FoldDefinition, classification) tuples for the containing region
+    """
+    if not regions:
+        return []
+
+    containing_region = find_containing_region(point, regions)
+    if containing_region is None:
+        return []
+
+    return get_region_fold_recipe(containing_region)
+
+
+def transform_vertex_with_recipe(
+    point: tuple[float, float],
+    fold_recipe: list[tuple[FoldDefinition, str]]
+) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+    """
+    Transform a 2D point to 3D using a fold recipe with pre-determined classifications.
+
+    Uses the classification from the recipe (IN_ZONE, AFTER) directly,
+    ensuring regions remain planar - no geometric re-classification.
+
+    Args:
+        point: 2D point (x, y)
+        fold_recipe: List of (FoldDefinition, classification) tuples
+
+    Returns:
+        (v3d, normal) tuple
+    """
+    if fold_recipe:
+        v3d = transform_point_with_recipe(point, fold_recipe)
+        normal = compute_surface_normal_with_recipe(point, fold_recipe)
+    else:
+        v3d = (point[0], point[1], 0.0)
+        normal = (0.0, 0.0, 1.0)
+    return v3d, normal
+
+
 def transform_vertex(
     point: tuple[float, float],
-    recipe: FoldRecipe
+    folds: list[FoldDefinition]
 ) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
     """
     Transform a 2D point to 3D and compute its surface normal.
 
+    DEPRECATED: Use transform_vertex_with_recipe() to preserve region classifications.
+
     Args:
         point: 2D point (x, y)
-        recipe: Fold recipe from region
+        folds: List of fold definitions to apply
 
     Returns:
-        (position, normal) tuple
+        (v3d, normal) tuple
     """
-    return transform_point_and_normal(point, recipe)
+    if folds:
+        v3d = transform_point(point, folds, preserve_order=True)
+        normal = compute_surface_normal(point, folds, preserve_order=True)
+    else:
+        v3d = (point[0], point[1], 0.0)
+        normal = (0.0, 0.0, 1.0)
+    return v3d, normal
 
 
-def transform_vertices_with_thickness(
+def transform_vertices_with_recipe(
     vertices_2d: list[tuple[float, float]],
-    recipe: FoldRecipe,
+    fold_recipe: list[tuple[FoldDefinition, str]],
     thickness: float
 ) -> tuple[list, list, list]:
     """
-    Transform 2D vertices to 3D top/bottom surfaces.
+    Transform 2D vertices to 3D top/bottom surfaces using fold recipe.
 
     Args:
         vertices_2d: List of 2D points
-        recipe: Fold recipe from region
+        fold_recipe: List of (FoldDefinition, classification) tuples
         thickness: Board thickness for bottom surface offset
 
     Returns:
@@ -651,7 +759,42 @@ def transform_vertices_with_thickness(
     normals = []
 
     for v in vertices_2d:
-        v3d, normal = transform_vertex(v, recipe)
+        v3d, normal = transform_vertex_with_recipe(v, fold_recipe)
+        top_vertices.append(v3d)
+        normals.append(normal)
+        bottom_vertices.append((
+            v3d[0] - normal[0] * thickness,
+            v3d[1] - normal[1] * thickness,
+            v3d[2] - normal[2] * thickness
+        ))
+
+    return top_vertices, bottom_vertices, normals
+
+
+def transform_vertices_with_thickness(
+    vertices_2d: list[tuple[float, float]],
+    folds: list[FoldDefinition],
+    thickness: float
+) -> tuple[list, list, list]:
+    """
+    Transform 2D vertices to 3D top/bottom surfaces with normals.
+
+    DEPRECATED: Use transform_vertices_with_recipe() to preserve region classifications.
+
+    Args:
+        vertices_2d: List of 2D points
+        folds: List of fold definitions to apply
+        thickness: Board thickness for bottom surface offset
+
+    Returns:
+        (top_vertices, bottom_vertices, normals) tuple
+    """
+    top_vertices = []
+    bottom_vertices = []
+    normals = []
+
+    for v in vertices_2d:
+        v3d, normal = transform_vertex(v, folds)
         top_vertices.append(v3d)
         normals.append(normal)
         bottom_vertices.append((
@@ -935,8 +1078,7 @@ def create_board_mesh_with_regions(
     subdivide_length: float = 1.0,
     cutouts: list[Polygon] = None,
     num_bend_subdivisions: int = 1,
-    debug_regions: bool = False,
-    apply_bend: bool = True
+    debug_regions: bool = False
 ) -> Mesh:
     """
     Create a 3D mesh for the board, split by fold regions.
@@ -954,7 +1096,6 @@ def create_board_mesh_with_regions(
         cutouts: List of cutout polygons (holes in the board)
         num_bend_subdivisions: Number of strips in bend zone
         debug_regions: If True, color each region differently for debugging
-        apply_bend: If False, show flat board with regions but no bending
 
     Returns:
         Mesh representing the board
@@ -998,11 +1139,10 @@ def create_board_mesh_with_regions(
             region_holes_2d.append([(v[0], v[1]) for v in sub_hole.vertices])
 
         # Get fold recipe with classifications for this region
-        # When apply_bend is False, use empty recipe to keep board flat
-        region_recipe = get_region_recipe(region) if apply_bend else []
+        region_recipe = get_region_fold_recipe(region)
 
         # Transform vertices to 3D with thickness offset using recipe-based function
-        top_vertices, bottom_vertices, vertex_normals = transform_vertices_with_thickness(
+        top_vertices, bottom_vertices, vertex_normals = transform_vertices_with_recipe(
             subdivided_verts, region_recipe, thickness
         )
 
@@ -1037,7 +1177,7 @@ def create_board_mesh_with_regions(
             hole_bottom_verts = []
 
             for v in hole_2d:
-                v3d, normal = transform_vertex(v, region_recipe)
+                v3d, normal = transform_vertex_with_recipe(v, region_recipe)
                 hole_top_verts.append(v3d)
                 hole_bottom_verts.append((
                     v3d[0] - normal[0] * thickness,
@@ -1078,7 +1218,7 @@ def create_board_mesh_with_regions(
                         found = True
                         break
                 if not found:
-                    v3d, normal = transform_vertex(v2d, region_recipe)
+                    v3d, normal = transform_vertex_with_recipe(v2d, region_recipe)
                     ti = mesh.add_vertex(v3d)
                     bi = mesh.add_vertex((
                         v3d[0] - normal[0] * thickness,
@@ -1152,7 +1292,7 @@ def create_trace_mesh(
     if regions:
         containing_region = find_containing_region(trace_mid, regions)
         if containing_region:
-            region_recipe = get_region_recipe(containing_region)
+            region_recipe = get_region_fold_recipe(containing_region)
 
     # Subdivide the ribbon along its length
     v0, v1, v2, v3 = ribbon.vertices
@@ -1170,8 +1310,8 @@ def create_trace_mesh(
         p2 = (v3[0] + t * (v2[0] - v3[0]), v3[1] + t * (v2[1] - v3[1]))
 
         # Transform to 3D using recipe-based function
-        p1_3d, _ = transform_vertex(p1, region_recipe)
-        p2_3d, _ = transform_vertex(p2, region_recipe)
+        p1_3d, _ = transform_vertex_with_recipe(p1, region_recipe)
+        p2_3d, _ = transform_vertex_with_recipe(p2, region_recipe)
 
         # Add z offset
         p1_3d = (p1_3d[0], p1_3d[1], p1_3d[2] + z_offset)
@@ -1225,12 +1365,12 @@ def create_pad_mesh(
     if regions:
         containing_region = find_containing_region(pad_center, regions)
         if containing_region:
-            region_recipe = get_region_recipe(containing_region)
+            region_recipe = get_region_fold_recipe(containing_region)
 
     # Transform vertices using recipe-based function
     vertices_3d = []
     for v in poly.vertices:
-        v3d, _ = transform_vertex(v, region_recipe)
+        v3d, _ = transform_vertex_with_recipe(v, region_recipe)
         vertices_3d.append((v3d[0], v3d[1], v3d[2] + z_offset))
 
     # Add vertices
@@ -1274,12 +1414,12 @@ def create_component_mesh(
     if regions:
         containing_region = find_containing_region(comp_center, regions)
         if containing_region:
-            region_recipe = get_region_recipe(containing_region)
+            region_recipe = get_region_fold_recipe(containing_region)
 
     # Transform bottom vertices using recipe-based function
     bottom_3d = []
     for v in box.vertices:
-        v3d, _ = transform_vertex(v, region_recipe)
+        v3d, _ = transform_vertex_with_recipe(v, region_recipe)
         bottom_3d.append(v3d)
 
     # Create top vertices (offset by height in local up direction)
@@ -1415,14 +1555,14 @@ def create_stiffener_mesh(
     if regions:
         containing_region = find_containing_region(stiffener_center, regions)
         if containing_region:
-            region_recipe = get_region_recipe(containing_region)
+            region_recipe = get_region_fold_recipe(containing_region)
 
     # Transform outline vertices to 3D with normals using recipe-based function
     top_vertices_pcb = []
     vertex_normals = []
 
     for v in outline:
-        v3d, normal = transform_vertex(v, region_recipe)
+        v3d, normal = transform_vertex_with_recipe(v, region_recipe)
         top_vertices_pcb.append(v3d)
         vertex_normals.append(normal)
 
@@ -1498,8 +1638,7 @@ def create_board_geometry_mesh(
     subdivide_length: float = 1.0,
     num_bend_subdivisions: int = 1,
     stiffeners: list = None,
-    debug_regions: bool = False,
-    apply_bend: bool = True
+    debug_regions: bool = False
 ) -> Mesh:
     """
     Create a complete 3D mesh from board geometry.
@@ -1516,7 +1655,6 @@ def create_board_geometry_mesh(
         num_bend_subdivisions: Number of strips in bend zone
         stiffeners: List of StiffenerRegion objects to render
         debug_regions: If True, color each region differently for debugging
-        apply_bend: If False, show flat board with regions but no bending
 
     Returns:
         Complete mesh
@@ -1546,38 +1684,33 @@ def create_board_geometry_mesh(
             subdivide_length=subdivide_length,
             cutouts=board.cutouts,
             num_bend_subdivisions=num_bend_subdivisions,
-            debug_regions=debug_regions,
-            apply_bend=apply_bend
+            debug_regions=debug_regions
         )
         mesh.merge(board_mesh)
-
-    # Use empty folds/regions when bending is disabled
-    active_folds = folds if apply_bend else []
-    active_regions = regions if apply_bend else None
 
     # Traces
     if include_traces:
         z_offset = 0.01  # Slightly above board surface
         for layer, traces in board.traces.items():
             for trace in traces:
-                trace_mesh = create_trace_mesh(trace, z_offset, active_folds, active_regions)
+                trace_mesh = create_trace_mesh(trace, z_offset, folds, regions)
                 mesh.merge(trace_mesh)
 
     # Pads
     if include_pads:
         z_offset = 0.02  # Above traces
         for pad in board.all_pads:
-            pad_mesh = create_pad_mesh(pad, z_offset, active_folds, active_regions)
+            pad_mesh = create_pad_mesh(pad, z_offset, folds, regions)
             mesh.merge(pad_mesh)
 
     # Components
     if include_components:
         for comp in board.components:
-            comp_mesh = create_component_mesh(comp, component_height, active_folds, active_regions)
+            comp_mesh = create_component_mesh(comp, component_height, folds, regions)
             mesh.merge(comp_mesh)
 
     # Stiffeners
-    if stiffeners and apply_bend:
+    if stiffeners:
         for stiffener in stiffeners:
             stiff_mesh = create_stiffener_mesh(
                 outline=stiffener.outline,

@@ -6,6 +6,7 @@ This module registers the plugin buttons in KiCad PCB Editor.
 
 import os
 import sys
+import importlib
 import pcbnew
 import wx
 
@@ -13,6 +14,30 @@ import wx
 PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
 if PLUGIN_DIR not in sys.path:
     sys.path.insert(0, PLUGIN_DIR)
+
+
+def reload_plugin_modules():
+    """Reload all plugin modules for development hot-reload."""
+    module_names = [
+        'kicad_parser',
+        'geometry',
+        'markers',
+        'bend_transform',
+        'planar_subdivision',
+        'mesh',
+        'config',
+        'stiffener',
+        'viewer',
+    ]
+
+    for name in module_names:
+        # Try both relative and absolute imports
+        for full_name in [f'kicad_flex_viewer.{name}', name]:
+            if full_name in sys.modules:
+                try:
+                    importlib.reload(sys.modules[full_name])
+                except Exception as e:
+                    print(f"Warning: Could not reload {full_name}: {e}")
 
 
 class FlexViewerTestAction(pcbnew.ActionPlugin):
@@ -26,6 +51,9 @@ class FlexViewerTestAction(pcbnew.ActionPlugin):
         self.icon_file_name = os.path.join(PLUGIN_DIR, "resources", "icon_test.png")
 
     def Run(self):
+        # Hot-reload modules for development
+        reload_plugin_modules()
+
         # Import our modules to verify they work
         try:
             from .kicad_parser import KiCadPCB
@@ -98,6 +126,9 @@ class CreateFoldAction(pcbnew.ActionPlugin):
 
     def Run(self):
         try:
+            # Hot-reload modules for development
+            reload_plugin_modules()
+
             from .fold_placer import run_fold_placer
             run_fold_placer()
         except Exception as e:
@@ -118,6 +149,9 @@ class OpenViewerAction(pcbnew.ActionPlugin):
 
     def Run(self):
         try:
+            # Hot-reload modules for development
+            reload_plugin_modules()
+
             from .kicad_parser import KiCadPCB
             from .markers import detect_fold_markers
             from .geometry import extract_geometry
@@ -148,8 +182,12 @@ class OpenViewerAction(pcbnew.ActionPlugin):
             geom = extract_geometry(pcb)
             markers = detect_fold_markers(pcb)
 
-            # Open viewer window
-            frame = FlexViewerFrame(None, geom, markers)
+            # Open viewer window with PCB reference for stiffeners and config persistence
+            frame = FlexViewerFrame(
+                None, geom, markers,
+                pcb=pcb,
+                pcb_filepath=board_path
+            )
             frame.Show()
 
         except Exception as e:

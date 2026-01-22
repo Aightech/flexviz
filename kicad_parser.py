@@ -190,6 +190,13 @@ class BoardInfo:
 
 
 @dataclass
+class LayerPolygon:
+    """A closed polygon from a user/graphic layer."""
+    vertices: list  # list of (x, y) tuples
+    layer: str
+
+
+@dataclass
 class GraphicLine:
     """A graphic line element."""
     start_x: float
@@ -283,6 +290,7 @@ class KiCadPCB:
         self._dimensions = None
         self._traces = None
         self._footprints = None
+        self._layer_polygons_cache = {}  # Cache for layer polygon extraction
 
     @classmethod
     def load(cls, filepath: Union[str, Path]) -> 'KiCadPCB':
@@ -883,3 +891,125 @@ class KiCadPCB:
             ))
 
         return self._footprints
+
+    def get_available_layers(self) -> list[str]:
+        """
+        Get list of all layer names defined in the PCB.
+
+        Returns:
+            List of layer names (e.g., ['F.Cu', 'B.Cu', 'User.1', 'User.2', ...])
+        """
+        info = self.get_board_info()
+        return info.layers
+
+    def get_user_layers(self) -> list[str]:
+        """
+        Get list of User layers (User.1, User.2, etc.).
+
+        These are commonly used for stiffener outlines and other annotations.
+        """
+        return [l for l in self.get_available_layers() if l.startswith("User.")]
+
+    def get_layer_polygons(self, layer: str) -> list[LayerPolygon]:
+        """
+        Extract closed polygons from a specific layer.
+
+        Supports:
+        - gr_poly: Explicit polygons
+        - gr_rect: Rectangles (converted to 4-vertex polygon)
+        - gr_line/gr_arc: Connected line/arc segments forming closed shapes
+
+        Args:
+            layer: Layer name (e.g., 'User.2')
+
+        Returns:
+            List of LayerPolygon objects
+        """
+        if layer in self._layer_polygons_cache:
+            return self._layer_polygons_cache[layer]
+
+        polygons = []
+
+        # 1. Extract explicit polygons (gr_poly)
+        for poly in self.root.find_all('gr_poly'):
+            layer_expr = poly['layer']
+            if not layer_expr or layer_expr.get_string(0) != layer:
+                continue
+
+            pts = poly['pts']
+            if pts:
+                vertices = []
+                for xy in pts.find_all('xy'):
+                    vertices.append((xy.get_float(0), xy.get_float(1)))
+                if len(vertices) >= 3:
+                    polygons.append(LayerPolygon(vertices=vertices, layer=layer))
+
+        # 2. Extract rectangles (gr_rect) and convert to polygons
+        for rect in self.root.find_all('gr_rect'):
+            layer_expr = rect['layer']
+            if not layer_expr or layer_expr.get_string(0) != layer:
+                continue
+
+            start = rect['start']
+            end = rect['end']
+            if start and end:
+                x1, y1 = start.get_float(0), start.get_float(1)
+                x2, y2 = end.get_float(0), end.get_float(1)
+                vertices = [(x1, y1), (x2, y1), (x2, y2), (x1, y2)]
+                polygons.append(LayerPolygon(vertices=vertices, layer=layer))
+
+        # 3. Extract connected line/arc segments and form closed polygons
+        segments = []
+
+        for line in self.root.find_all('gr_line'):
+            layer_expr = line['layer']
+            if not layer_expr or layer_expr.get_string(0) != layer:
+                continue
+
+            start = line['start']
+            end = line['end']
+            if start and end:
+                segments.append((
+                    (start.get_float(0), start.get_float(1)),
+                    (end.get_float(0), end.get_float(1))
+                ))
+
+        for arc in self.root.find_all('gr_arc'):
+            layer_expr = arc['layer']
+            if not layer_expr or layer_expr.get_string(0) != layer:
+                continue
+
+            start = arc['start']
+            mid = arc['mid']
+            end = arc['end']
+            if start and end:
+                arc_segments = self._linearize_arc(
+                    (start.get_float(0), start.get_float(1)),
+                    (mid.get_float(0), mid.get_float(1)) if mid else None,
+                    (end.get_float(0), end.get_float(1))
+                )
+                segments.extend(arc_segments)
+
+        # Order segments into closed polygons
+        if segments:
+            ordered_polygons = self._order_segments(segments)
+            for vertices in ordered_polygons:
+                if len(vertices) >= 3:
+                    polygons.append(LayerPolygon(vertices=vertices, layer=layer))
+
+        self._layer_polygons_cache[layer] = polygons
+        return polygons
+
+    def get_layer_polygon_vertices(self, layer: str) -> list[list[tuple[float, float]]]:
+        """
+        Get polygon vertices from a layer as simple lists.
+
+        Convenience method that returns just the vertex lists without LayerPolygon wrapper.
+
+        Args:
+            layer: Layer name (e.g., 'User.2')
+
+        Returns:
+            List of vertex lists, each representing a closed polygon
+        """
+        return [poly.vertices for poly in self.get_layer_polygons(layer)]
