@@ -355,6 +355,8 @@ def parse_wrl_native(path: str) -> Optional[LoadedModel]:
     Parse a VRML 2.0 (.wrl) file natively without external dependencies.
 
     Handles the common KiCad WRL format with IndexedFaceSet geometry.
+    KiCad WRL files use units where 1 unit = 0.1 inch = 2.54mm,
+    so we apply a scale factor to convert to mm.
 
     Args:
         path: Path to WRL file
@@ -362,6 +364,9 @@ def parse_wrl_native(path: str) -> Optional[LoadedModel]:
     Returns:
         LoadedModel or None if parsing fails
     """
+    # KiCad WRL files use 0.1 inch units, need to convert to mm
+    WRL_SCALE = 2.54  # 0.1 inch to mm
+
     try:
         with open(path, 'r', encoding='utf-8', errors='ignore') as f:
             content = f.read()
@@ -409,9 +414,9 @@ def parse_wrl_native(path: str) -> Optional[LoadedModel]:
             point_parts = re.findall(r'[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?', points_str)
 
             for i in range(0, len(point_parts) - 2, 3):
-                x = float(point_parts[i])
-                y = float(point_parts[i + 1])
-                z = float(point_parts[i + 2])
+                x = float(point_parts[i]) * WRL_SCALE
+                y = float(point_parts[i + 1]) * WRL_SCALE
+                z = float(point_parts[i + 2]) * WRL_SCALE
                 vertices.append((x, y, z))
                 mesh.add_vertex((x, y, z))
 
