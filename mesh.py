@@ -16,6 +16,7 @@ try:
     from .bend_transform import FoldDefinition, FoldRecipe, transform_point, transform_point_and_normal
     from .markers import FoldMarker
     from .planar_subdivision import split_board_into_regions, Region, find_containing_region
+    from .model_loader import load_model, expand_kicad_vars, get_loader_status
 except ImportError:
     from geometry import (
         Polygon, LineSegment, BoardGeometry, PadGeometry,
@@ -25,6 +26,7 @@ except ImportError:
     from bend_transform import FoldDefinition, FoldRecipe, transform_point, transform_point_and_normal
     from markers import FoldMarker
     from planar_subdivision import split_board_into_regions, Region, find_containing_region
+    from model_loader import load_model, expand_kicad_vars, get_loader_status
 
 
 # =============================================================================
@@ -570,6 +572,7 @@ COLOR_PAD = (255, 215, 0)        # Gold
 COLOR_COMPONENT = (128, 128, 128) # Gray
 COLOR_STIFFENER = (139, 90, 43)  # Saddle brown (FR4 stiffener color)
 COLOR_CUTOUT = (50, 50, 50)      # Dark gray for cutout walls
+COLOR_MODEL_3D = (180, 180, 180) # Light gray for 3D models
 
 # Debug colors for regions (used when debug_regions=True)
 DEBUG_REGION_COLORS = [
@@ -1396,6 +1399,148 @@ def create_stiffener_mesh(
     return mesh
 
 
+def create_component_3d_model_mesh(
+    component: ComponentGeometry,
+    pcb_dir: str,
+    pcb_thickness: float,
+    regions: list[Region] = None
+) -> Mesh:
+    """
+    Create a 3D mesh for a component from its 3D model file.
+
+    Args:
+        component: Component geometry with models list
+        pcb_dir: Directory of PCB file for path resolution
+        pcb_thickness: PCB thickness for back layer positioning
+        regions: List of Region objects for region-based transformation
+
+    Returns:
+        Transformed mesh or empty mesh if no model loaded
+    """
+    mesh = Mesh()
+
+    if not hasattr(component, 'models') or not component.models:
+        return mesh
+
+    # Find which region the component center is in
+    region_recipe = []
+    if regions:
+        containing_region = find_containing_region(component.center, regions)
+        if containing_region:
+            region_recipe = get_region_recipe(containing_region)
+
+    # Determine if component is on back layer
+    is_back_layer = component.layer == "B.Cu"
+
+    # Try each model until one loads successfully
+    for model_ref in component.models:
+        if model_ref.hide:
+            continue
+
+        # Resolve path
+        resolved_path = expand_kicad_vars(model_ref.path, pcb_dir)
+        if not resolved_path:
+            continue
+
+        # Load model
+        loaded = load_model(resolved_path)
+        if not loaded:
+            continue
+
+        # Apply transforms to each vertex
+        # Transform order (KiCad convention):
+        # 1. Scale the model
+        # 2. Rotate the model (model's own rotation)
+        # 3. Translate by model offset
+        # 4. Rotate by component angle
+        # 5. If back layer, mirror and offset
+        # 6. Transform using region recipe (bend)
+        # 7. Translate to component position
+
+        # Pre-compute rotation matrices
+        def rot_x(angle):
+            c, s = math.cos(angle), math.sin(angle)
+            return lambda x, y, z: (x, y * c - z * s, y * s + z * c)
+
+        def rot_y(angle):
+            c, s = math.cos(angle), math.sin(angle)
+            return lambda x, y, z: (x * c + z * s, y, -x * s + z * c)
+
+        def rot_z(angle):
+            c, s = math.cos(angle), math.sin(angle)
+            return lambda x, y, z: (x * c - y * s, x * s + y * c, z)
+
+        # Model rotations (convert to radians)
+        rx = rot_x(math.radians(model_ref.rotate[0]))
+        ry = rot_y(math.radians(model_ref.rotate[1]))
+        rz = rot_z(math.radians(model_ref.rotate[2]))
+
+        # Component rotation
+        comp_rz = rot_z(math.radians(-component.angle))  # KiCad uses clockwise positive
+
+        # Get surface normal at component center (after bend)
+        _, surface_normal = transform_point_and_normal(component.center, region_recipe)
+
+        for v in loaded.mesh.vertices:
+            x, y, z = v
+
+            # 1. Scale
+            x *= model_ref.scale[0]
+            y *= model_ref.scale[1]
+            z *= model_ref.scale[2]
+
+            # 2. Model rotation (ZYX order)
+            x, y, z = rz(x, y, z)
+            x, y, z = ry(x, y, z)
+            x, y, z = rx(x, y, z)
+
+            # 3. Model offset
+            x += model_ref.offset[0]
+            y += model_ref.offset[1]
+            z += model_ref.offset[2]
+
+            # 4. Component rotation
+            x, y, z = comp_rz(x, y, z)
+
+            # 5. Back layer handling (flip and offset)
+            if is_back_layer:
+                z = -z - pcb_thickness
+
+            # Now apply bend transform to (x, y) position relative to component center
+            # The Z offset is applied along the transformed surface normal
+            local_x = component.center[0] + x
+            local_y = component.center[1] + y
+
+            # Transform the base position using the region recipe
+            base_3d, normal = transform_point_and_normal((local_x, local_y), region_recipe)
+
+            # Apply Z offset along the surface normal
+            final_x = base_3d[0] + normal[0] * z
+            final_y = base_3d[1] + normal[1] * z
+            final_z = base_3d[2] + normal[2] * z
+
+            mesh.add_vertex((final_x, final_y, final_z))
+
+        # Copy faces with proper winding
+        for i, face in enumerate(loaded.mesh.faces):
+            color = loaded.mesh.colors[i] if i < len(loaded.mesh.colors) else COLOR_MODEL_3D
+            if len(face) == 3:
+                if is_back_layer:
+                    mesh.add_triangle(face[0], face[2], face[1], color)
+                else:
+                    mesh.add_triangle(face[0], face[1], face[2], color)
+            elif len(face) == 4:
+                if is_back_layer:
+                    mesh.add_quad(face[0], face[3], face[2], face[1], color)
+                else:
+                    mesh.add_quad(face[0], face[1], face[2], face[3], color)
+
+        # Return after first successful model load
+        return mesh
+
+    return mesh
+
+
 def create_board_geometry_mesh(
     board: BoardGeometry,
     markers: list[FoldMarker] = None,
@@ -1407,7 +1552,9 @@ def create_board_geometry_mesh(
     num_bend_subdivisions: int = 1,
     stiffeners: list = None,
     debug_regions: bool = False,
-    apply_bend: bool = True
+    apply_bend: bool = True,
+    include_3d_models: bool = False,
+    pcb_dir: str = None
 ) -> Mesh:
     """
     Create a complete 3D mesh from board geometry.
@@ -1424,6 +1571,8 @@ def create_board_geometry_mesh(
         stiffeners: List of StiffenerRegion objects to render
         debug_regions: If True, color each region differently for debugging
         apply_bend: If False, show flat board with regions but no bending
+        include_3d_models: Include 3D models from footprints
+        pcb_dir: PCB directory for resolving model paths
 
     Returns:
         Complete mesh
@@ -1474,11 +1623,26 @@ def create_board_geometry_mesh(
             pad_mesh = create_pad_mesh(pad, z_offset, active_regions, board.thickness)
             mesh.merge(pad_mesh)
 
-    # Components
-    if include_components:
+    # Components (box placeholders)
+    if include_components and not include_3d_models:
         for comp in board.components:
             comp_mesh = create_component_mesh(comp, component_height, active_regions, board.thickness)
             mesh.merge(comp_mesh)
+
+    # 3D Models
+    if include_3d_models and pcb_dir:
+        loaded_count = 0
+        for comp in board.components:
+            model_mesh = create_component_3d_model_mesh(
+                comp, pcb_dir, board.thickness, active_regions
+            )
+            if model_mesh.vertices:
+                mesh.merge(model_mesh)
+                loaded_count += 1
+            elif include_components:
+                # Fallback to box if model couldn't load
+                comp_mesh = create_component_mesh(comp, component_height, active_regions, board.thickness)
+                mesh.merge(comp_mesh)
 
     # Stiffeners
     if stiffeners and apply_bend:

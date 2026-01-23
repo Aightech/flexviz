@@ -17,10 +17,14 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Optional, Tuple, List
 
-try:
-    from .mesh import Mesh
-except ImportError:
-    from mesh import Mesh
+
+def _get_mesh_class():
+    """Lazily import Mesh to avoid circular imports."""
+    try:
+        from .mesh import Mesh
+    except ImportError:
+        from mesh import Mesh
+    return Mesh
 
 
 # Track available loaders
@@ -70,7 +74,7 @@ def get_loader_status() -> dict:
 @dataclass
 class LoadedModel:
     """A loaded 3D model."""
-    mesh: Mesh
+    mesh: 'Mesh'  # Forward reference to avoid circular import
     source_path: str
     loader_used: str = "unknown"
     # Bounding box in model space (mm)
@@ -219,6 +223,7 @@ def load_step_occ(path: str) -> Optional[LoadedModel]:
         mesh_algo.Perform()
 
         # Extract triangles
+        Mesh = _get_mesh_class()
         mesh = Mesh()
         vertex_map = {}
 
@@ -314,6 +319,7 @@ def load_model_trimesh(path: str) -> Optional[LoadedModel]:
             combined = scene
 
         # Convert to our Mesh format
+        Mesh = _get_mesh_class()
         mesh = Mesh()
         for v in combined.vertices:
             mesh.add_vertex((float(v[0]), float(v[1]), float(v[2])))
@@ -360,6 +366,7 @@ def parse_wrl_native(path: str) -> Optional[LoadedModel]:
         with open(path, 'r', encoding='utf-8', errors='ignore') as f:
             content = f.read()
 
+        Mesh = _get_mesh_class()
         mesh = Mesh()
         all_vertices = []
         all_faces = []
@@ -463,7 +470,7 @@ def load_model(path: str) -> Optional[LoadedModel]:
     Load a 3D model from file using best available loader.
 
     Graceful degradation order:
-    1. For STEP files: OCC → trimesh
+    1. For STEP files: OCC → trimesh → try WRL fallback
     2. For WRL files: trimesh → native parser
     3. Returns None if all loaders fail (caller uses placeholder)
 
@@ -486,6 +493,13 @@ def load_model(path: str) -> Optional[LoadedModel]:
         # Try trimesh (needs cascadio for STEP)
         if _trimesh_available:
             result = load_model_trimesh(path)
+            if result:
+                return result
+
+        # Fallback: try WRL version (KiCad often provides both)
+        wrl_path = os.path.splitext(path)[0] + '.wrl'
+        if os.path.exists(wrl_path):
+            result = parse_wrl_native(wrl_path)
             if result:
                 return result
 
@@ -518,7 +532,7 @@ def load_model(path: str) -> Optional[LoadedModel]:
 # =============================================================================
 
 def apply_model_transform(
-    mesh: Mesh,
+    mesh: 'Mesh',
     component_pos: tuple[float, float],
     component_angle: float,
     model_offset: tuple[float, float, float],
@@ -526,7 +540,7 @@ def apply_model_transform(
     model_rotate: tuple[float, float, float],
     pcb_thickness: float = 0,
     is_back_layer: bool = False
-) -> Mesh:
+) -> 'Mesh':
     """
     Apply KiCad model transforms to a mesh.
 
@@ -551,6 +565,7 @@ def apply_model_transform(
     Returns:
         New transformed mesh
     """
+    Mesh = _get_mesh_class()
     result = Mesh()
 
     # Pre-compute rotation matrices
@@ -627,7 +642,7 @@ def create_component_model_mesh(
     component,
     pcb_dir: str = None,
     pcb_thickness: float = 0
-) -> Optional[Mesh]:
+) -> Optional['Mesh']:
     """
     Create a mesh for a component from its 3D model.
 

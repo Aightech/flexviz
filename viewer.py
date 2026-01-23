@@ -5,6 +5,7 @@ Uses wxPython + OpenGL (wx.glcanvas) for rendering.
 No external dependencies required - uses packages bundled with KiCad.
 """
 
+import os
 import wx
 import wx.glcanvas as glcanvas
 from OpenGL.GL import *
@@ -525,6 +526,11 @@ class FlexViewerFrame(wx.Frame):
         self.cb_stiffeners.Bind(wx.EVT_CHECKBOX, self.on_display_option_changed)
         display_sizer.Add(self.cb_stiffeners, 0, wx.ALL, 3)
 
+        self.cb_3d_models = wx.CheckBox(control_panel, label="Show 3D Models")
+        self.cb_3d_models.SetValue(False)
+        self.cb_3d_models.Bind(wx.EVT_CHECKBOX, self.on_display_option_changed)
+        display_sizer.Add(self.cb_3d_models, 0, wx.ALL, 3)
+
         right_column.Add(display_sizer, 0, wx.EXPAND | wx.ALL, 5)
 
         # PCB Settings
@@ -729,6 +735,12 @@ class FlexViewerFrame(wx.Frame):
         # Check if bending is enabled
         bend_enabled = self.cb_bend.GetValue() if hasattr(self, 'cb_bend') else True
 
+        # Determine PCB directory for 3D model path resolution
+        pcb_dir = os.path.dirname(self.pcb_filepath) if self.pcb_filepath else None
+
+        # Check if 3D models should be shown
+        include_3d_models = self.cb_3d_models.GetValue() if hasattr(self, 'cb_3d_models') else False
+
         # Generate mesh
         mesh = create_board_geometry_mesh(
             self.board_geometry,
@@ -739,7 +751,9 @@ class FlexViewerFrame(wx.Frame):
             num_bend_subdivisions=self.config.bend_subdivisions if hasattr(self, 'config') else 1,
             stiffeners=stiffeners,
             debug_regions=self.cb_debug_regions.GetValue() if hasattr(self, 'cb_debug_regions') else False,
-            apply_bend=bend_enabled
+            apply_bend=bend_enabled,
+            include_3d_models=include_3d_models,
+            pcb_dir=pcb_dir
         )
 
         self.canvas.set_mesh(mesh)
