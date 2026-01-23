@@ -394,15 +394,200 @@ jobs:
 | **Phase 1** | Parser, Markers, Geometry | Unit tests + manual file parsing | ✅ Complete |
 | **Phase 2** | Bend Transform, Mesh | Unit tests + visual OBJ inspection | ✅ Complete |
 | **Phase 3** | Viewer, UI Controls | Unit tests + manual viewer testing | ✅ Complete |
-| **Phase 4** | KiCad Actions, Fold Placer | Integration testing in KiCad | 🔄 In Progress |
+| **Phase 4** | KiCad Actions, Fold Placer | Integration testing in KiCad | ✅ Complete |
 | **Phase 5** | Error Handling, Performance | Stress testing, edge cases | 🔄 In Progress |
 | **Phase 6** | Documentation, Release | Final review | ⏳ Pending |
+| **Phase 7** | Validation & Warnings | Design rule checks | ⏳ Pending |
+| **Phase 8** | Visual Enhancements | Extended rendering | ⏳ Pending |
+| **Phase 9** | Export & Animation | STEP, GLB animation | ⏳ Pending |
+| **Phase 10** | Release Preparation | KiCad integration review | ⏳ Pending |
 
 Each phase builds on the previous. Complete all unit tests before moving to the next phase.
 
 ---
 
+## Phase 7: Validation & Warnings
+
+### 7.1 Fold Line Validation
+
+- [ ] Check if fold line crosses stiffener region
+- [ ] Display warning in viewer when fold-stiffener conflict detected
+- [ ] Highlight conflicting stiffeners in red
+- [ ] Add validation status panel in UI
+
+### 7.2 Minimum Bend Radius Validation
+
+- [ ] Calculate actual bend radius for each fold
+- [ ] Compare against `config.min_bend_radius_factor × flex_thickness`
+- [ ] Display warning when radius is too small
+- [ ] Color-code fold markers by radius safety (green/yellow/red)
+- [ ] Show recommended minimum radius in UI
+
+### 7.3 Component in Bend Zone Detection
+
+- [ ] Check if any component footprint overlaps bend zone
+- [ ] Consider component height (tall components more problematic)
+- [ ] Display warning with list of affected components
+- [ ] Optional: highlight components in bend zones in viewer
+
+**Unit Tests:**
+- [ ] Test stiffener-fold intersection detection
+- [ ] Test bend radius calculation
+- [ ] Test component-bend zone overlap detection
+
+---
+
+## Phase 8: Visual Enhancements
+
+### 8.1 Via/Drill Hole Visualization
+
+- [ ] Extract via positions from KiCad PCB
+- [ ] Extract via drill diameter and pad size
+- [ ] Render vias as cylindrical holes through board
+- [ ] Support blind/buried vias (partial depth)
+- [ ] Add "Show Vias" checkbox to display options
+
+### 8.2 Silkscreen Layer Display
+
+- [ ] Extract silkscreen graphics (F.SilkS, B.SilkS layers)
+- [ ] Render text as extruded geometry or textured quads
+- [ ] Render silkscreen lines and shapes
+- [ ] Apply white color with slight offset above pads
+- [ ] Add "Show Silkscreen" checkbox to display options
+
+### 8.3 Copper Zone Fills (Pours)
+
+- [ ] Extract zone fill polygons from KiCad PCB
+- [ ] Handle zone with thermal reliefs (complex geometry)
+- [ ] Render filled zones as copper-colored surfaces
+- [ ] Support zones on both F.Cu and B.Cu layers
+- [ ] Add "Show Zones" checkbox to display options
+
+### 8.4 3D Component Models from KiCad
+
+- [ ] Read 3D model paths from footprint definitions
+- [ ] Support STEP file loading (via OCC or trimesh)
+- [ ] Support WRL file loading (VRML)
+- [ ] Apply component position, rotation, and offset
+- [ ] Scale models correctly (KiCad uses mm)
+- [ ] Handle missing model files gracefully
+- [ ] Add "Show 3D Models" checkbox (default: placeholder boxes)
+
+**Unit Tests:**
+- [ ] Test via extraction from KiCad PCB
+- [ ] Test silkscreen graphics extraction
+- [ ] Test zone polygon extraction
+- [ ] Test 3D model path resolution
+
+---
+
+## Phase 9: Export & Animation
+
+### 9.1 STEP Export
+
+- [ ] Research STEP export libraries (OCC, cadquery, build123d)
+- [ ] Convert mesh to solid geometry (watertight mesh)
+- [ ] Export board as STEP solid
+- [ ] Include stiffeners in STEP export
+- [ ] Optional: include 3D component models
+- [ ] Handle bent geometry correctly
+
+### 9.2 Fold Animation Export (GLB)
+
+- [ ] Implement fold animation timeline (0% flat → 100% folded)
+- [ ] Generate mesh at multiple keyframes
+- [ ] Export as animated GLB (glTF binary format)
+- [ ] Support animation speed/duration settings
+- [ ] Preview animation in viewer before export
+- [ ] Export individual frames as OBJ sequence (alternative)
+
+**Dependencies:**
+- STEP: `cadquery`, `OCP`, or `pythonocc-core`
+- GLB: `pygltflib` or `trimesh` with gltf support
+
+**Unit Tests:**
+- [ ] Test STEP export produces valid file
+- [ ] Test GLB animation contains correct keyframes
+- [ ] Test animation interpolation smoothness
+
+---
+
+## Phase 10: Release Preparation
+
+### 10.1 Error Messages & User Feedback
+
+- [ ] Audit all error paths for user-friendly messages
+- [ ] Add progress indicators for slow operations
+- [ ] Show success confirmations for exports
+- [ ] Add tooltips to UI controls
+- [ ] Implement status bar messages
+
+### 10.2 Documentation
+
+- [ ] Write installation guide (KiCad 7.x, 8.x, 9.x)
+- [ ] Create quick start tutorial with screenshots
+- [ ] Document marker placement conventions
+- [ ] Create viewer controls reference
+- [ ] Write troubleshooting section
+- [ ] Add FAQ section
+- [ ] Generate API documentation from docstrings
+
+### 10.3 KiCad Plugin Manager (PCM) Package
+
+- [ ] Create `metadata.json` following KiCad PCM spec
+- [ ] Set up `resources/` directory with icons
+- [ ] Create ZIP package structure
+- [ ] Test installation via PCM
+- [ ] Submit to KiCad plugin repository
+
+### 10.4 KiCad Integration Feasibility Review
+
+**Goal:** Assess feasibility of integrating directly into KiCad core.
+
+- [ ] Review KiCad contribution guidelines
+- [ ] Analyze KiCad 3D viewer architecture (OCE/OCC based)
+- [ ] Identify integration points:
+  - [ ] PCB Editor: fold marker placement as native tool
+  - [ ] 3D Viewer: bend transformation in existing viewer
+  - [ ] File format: fold data in `.kicad_pcb` schema
+- [ ] Document technical requirements:
+  - [ ] C++ port of bend transform algorithms
+  - [ ] Integration with OpenCASCADE geometry kernel
+  - [ ] UI integration (wxWidgets based)
+- [ ] Identify blockers and dependencies
+- [ ] Write proposal document for KiCad developers
+- [ ] Engage with KiCad community (forum, GitLab)
+
+**KiCad Coding Standards:**
+- C++17, wxWidgets for UI
+- OpenCASCADE for 3D geometry
+- CMake build system
+- GitLab for contributions
+
+### 10.5 Release Checklist
+
+- [ ] Set version number (semver)
+- [ ] Update changelog (CHANGELOG.md)
+- [ ] Verify LICENSE file
+- [ ] Run full test suite
+- [ ] Test on KiCad 7.x
+- [ ] Test on KiCad 8.x
+- [ ] Test on KiCad 9.x (if available)
+- [ ] Test on Windows, macOS, Linux
+- [ ] Create GitHub release with assets
+- [ ] Announce on KiCad forum
+
+---
+
 ## Recent Updates
+
+**2026-01-23**: Dual stiffener layers and trace improvements
+- **Stiffener UI**: Replaced single layer + top/bottom radio with two layer selectors (top and bottom)
+- **Config**: `stiffener_layer_top` and `stiffener_layer_bottom` replace old `stiffener_layer` + `stiffener_side`
+- **Legacy migration**: Old config format automatically migrated on load
+- **Fold angle control**: Changed from slider to SpinCtrl with ±360° range
+- **Back layer traces**: Traces on B.Cu now render on bottom of PCB
+- **Trace fold crossing**: Each trace subdivision point now finds its own region, fixing artifacts when traces cross fold zones
 
 **2026-01-21**: Added region-based triangulation
 - New `region_splitter.py` module splits board into regions along fold axes
