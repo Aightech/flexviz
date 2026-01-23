@@ -147,9 +147,13 @@ def extract_stiffeners(pcb: KiCadPCB, config: FlexConfig) -> list[StiffenerRegio
 
     # Determine which polygons are holes by checking containment
     # A polygon is a hole if its centroid is inside another polygon
+    # and it has smaller area (to handle concentric shapes)
     n = len(valid_polygons)
     is_hole = [False] * n
     hole_parent = [-1] * n  # Index of containing polygon for each hole
+
+    # Pre-compute areas
+    areas = [abs(_signed_polygon_area(p)) for p in valid_polygons]
 
     for i in range(n):
         center_i = _polygon_centroid(valid_polygons[i])
@@ -157,10 +161,9 @@ def extract_stiffeners(pcb: KiCadPCB, config: FlexConfig) -> list[StiffenerRegio
             if i == j:
                 continue
             if point_in_polygon(center_i, valid_polygons[j]):
-                # Polygon i is inside polygon j
-                # Check that j is not also inside i (avoid mutual containment issues)
-                center_j = _polygon_centroid(valid_polygons[j])
-                if not point_in_polygon(center_j, valid_polygons[i]):
+                # Polygon i's center is inside polygon j
+                # It's a hole if it has smaller area (nested inside larger)
+                if areas[i] < areas[j]:
                     is_hole[i] = True
                     hole_parent[i] = j
                     break

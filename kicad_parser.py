@@ -958,7 +958,34 @@ class KiCadPCB:
                 vertices = [(x1, y1), (x2, y1), (x2, y2), (x1, y2)]
                 polygons.append(LayerPolygon(vertices=vertices, layer=layer))
 
-        # 3. Extract connected line/arc segments and form closed polygons
+        # 3. Extract circles (gr_circle) and convert to polygon approximations
+        import math
+        for circle in self.root.find_all('gr_circle'):
+            layer_expr = circle['layer']
+            if not layer_expr or layer_expr.get_string(0) != layer:
+                continue
+
+            center = circle['center']
+            end = circle['end']
+            if center and end:
+                cx = center.get_float(0)
+                cy = center.get_float(1)
+                ex = end.get_float(0)
+                ey = end.get_float(1)
+                radius = math.sqrt((ex - cx) ** 2 + (ey - cy) ** 2)
+
+                if radius > 0:
+                    # Convert circle to polygon with 32 segments
+                    num_segments = 32
+                    vertices = []
+                    for i in range(num_segments):
+                        angle = 2 * math.pi * i / num_segments
+                        x = cx + radius * math.cos(angle)
+                        y = cy + radius * math.sin(angle)
+                        vertices.append((x, y))
+                    polygons.append(LayerPolygon(vertices=vertices, layer=layer))
+
+        # 4. Extract connected line/arc segments and form closed polygons
         segments = []
 
         for line in self.root.find_all('gr_line'):
