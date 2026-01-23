@@ -10,21 +10,31 @@ KiCad plugins run inside KiCad's bundled Python environment, which is separate f
 
 ### Linux (Ubuntu/Debian)
 
-1. **Find KiCad's Python path:**
-   ```bash
-   # For KiCad 8.x/9.x, the Python is typically at:
-   /usr/bin/python3
-   # Or check KiCad's scripting console for the exact path
-   ```
+KiCad on Linux uses the system Python. Installation method depends on your distro version:
 
-2. **Install build123d:**
-   ```bash
-   # Using system Python (KiCad usually uses system Python on Linux)
-   pip3 install --user build123d
+#### Ubuntu 23.04+ / Debian 12+ (PEP 668 systems)
 
-   # Or with sudo if --user doesn't work
-   sudo pip3 install build123d
-   ```
+Modern systems protect the system Python. Use the `--break-system-packages` flag for user installs:
+
+```bash
+pip3 install --user --break-system-packages build123d
+```
+
+This is safe because `--user` installs to `~/.local/` (your home directory), not system-wide.
+
+#### Older Ubuntu/Debian
+
+```bash
+pip3 install --user build123d
+```
+
+#### Using the install script
+
+The easiest method - the script auto-detects your system:
+
+```bash
+./install_step_export.sh
+```
 
 3. **Verify installation:**
    - Open KiCad PCB Editor

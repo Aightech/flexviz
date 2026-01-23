@@ -24,8 +24,19 @@ case $OS in
     linux)
         echo "Installing build123d for system Python (used by KiCad on Linux)..."
         echo ""
-        echo "Running: pip3 install --user build123d"
-        pip3 install --user build123d
+
+        # Check if we're on a PEP 668 system (Debian 12+, Ubuntu 23.04+)
+        if pip3 install --user --dry-run build123d 2>&1 | grep -q "externally-managed"; then
+            echo "Detected PEP 668 protected environment (modern Debian/Ubuntu)"
+            echo "Using --break-system-packages flag for user install..."
+            echo ""
+            echo "Running: pip3 install --user --break-system-packages build123d"
+            pip3 install --user --break-system-packages build123d
+        else
+            echo "Running: pip3 install --user build123d"
+            pip3 install --user build123d
+        fi
+
         echo ""
         echo "Verifying installation..."
         python3 -c "from build123d import Box; print('SUCCESS: build123d is installed')"
