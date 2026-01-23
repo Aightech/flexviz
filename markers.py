@@ -237,6 +237,150 @@ def find_line_pairs(lines: list[GraphicLine]) -> list[tuple[GraphicLine, Graphic
     return pairs
 
 
+def _point_between_parallel_lines(point: tuple, line1: GraphicLine, line2: GraphicLine, tolerance: float = 0.5) -> bool:
+    """
+    Check if a point is between two parallel lines.
+
+    The point is considered "between" if the sum of distances to both lines
+    is approximately equal to the distance between the lines (with tolerance).
+    """
+    d1 = _distance_point_to_line(point, line1)
+    d2 = _distance_point_to_line(point, line2)
+    line_dist = _distance_between_parallel_lines(line1, line2)
+
+    # Point is between if sum of distances ≈ line distance
+    # tolerance is a fraction of line_dist
+    return abs(d1 + d2 - line_dist) < line_dist * tolerance
+
+
+def _point_along_lines(point: tuple, line1: GraphicLine, line2: GraphicLine) -> bool:
+    """
+    Check if a point is within the length span of the parallel lines.
+    Projects the point onto the line direction and checks if it's within bounds.
+    """
+    # Use line1's direction
+    dx = line1.end_x - line1.start_x
+    dy = line1.end_y - line1.start_y
+    length = math.sqrt(dx * dx + dy * dy)
+
+    if length < 1e-6:
+        return False
+
+    # Unit direction vector
+    ux, uy = dx / length, dy / length
+
+    # Project point onto line direction (relative to line1 start)
+    px = point[0] - line1.start_x
+    py = point[1] - line1.start_y
+    proj = px * ux + py * uy
+
+    # Get projection range from both lines
+    min_proj = min(0, length)
+    max_proj = max(0, length)
+
+    # Also check line2's extent
+    p2x = line2.start_x - line1.start_x
+    p2y = line2.start_y - line1.start_y
+    proj2_start = p2x * ux + p2y * uy
+
+    p2ex = line2.end_x - line1.start_x
+    p2ey = line2.end_y - line1.start_y
+    proj2_end = p2ex * ux + p2ey * uy
+
+    min_proj = min(min_proj, proj2_start, proj2_end)
+    max_proj = max(max_proj, proj2_start, proj2_end)
+
+    # Add some tolerance (20% of line length)
+    margin = length * 0.2
+    return (min_proj - margin) <= proj <= (max_proj + margin)
+
+
+def find_containing_line_pair(
+    point: tuple,
+    lines: list[GraphicLine]
+) -> Optional[tuple[GraphicLine, GraphicLine]]:
+    """
+    Find the pair of parallel lines that contains the given point.
+
+    Returns the pair where:
+    - Lines are parallel
+    - Point is between the two lines
+    - Point is within the length span of the lines
+    - If multiple pairs match, returns the one with smallest line distance
+    """
+    best_pair = None
+    best_distance = float('inf')
+
+    for i, line1 in enumerate(lines):
+        for j, line2 in enumerate(lines):
+            if j <= i:
+                continue
+
+            # Check parallelism
+            if not _lines_parallel(line1, line2):
+                continue
+
+            # Check similar length
+            len1 = _line_length(line1)
+            len2 = _line_length(line2)
+            if len1 < 1e-6 or len2 < 1e-6:
+                continue
+            length_ratio = min(len1, len2) / max(len1, len2)
+            if length_ratio < 0.5:
+                continue
+
+            # Check if point is between the lines
+            if not _point_between_parallel_lines(point, line1, line2):
+                continue
+
+            # Check if point is along the lines (within their span)
+            if not _point_along_lines(point, line1, line2):
+                continue
+
+            # This pair contains the point - check if it's the closest
+            distance = _distance_between_parallel_lines(line1, line2)
+            if distance < best_distance:
+                best_pair = (line1, line2)
+                best_distance = distance
+
+    return best_pair
+
+
+def _get_line_pair_bbox(line1: GraphicLine, line2: GraphicLine, margin: float = 0) -> tuple:
+    """
+    Get bounding box for a line pair.
+    Returns (min_x, min_y, max_x, max_y) with optional margin.
+    """
+    all_x = [line1.start_x, line1.end_x, line2.start_x, line2.end_x]
+    all_y = [line1.start_y, line1.end_y, line2.start_y, line2.end_y]
+
+    return (
+        min(all_x) - margin,
+        min(all_y) - margin,
+        max(all_x) + margin,
+        max(all_y) + margin
+    )
+
+
+def _boxes_overlap(box1: tuple, box2: tuple) -> bool:
+    """
+    Check if two bounding boxes overlap.
+    Each box is (min_x, min_y, max_x, max_y).
+    """
+    return not (
+        box1[2] < box2[0] or  # box1 is left of box2
+        box1[0] > box2[2] or  # box1 is right of box2
+        box1[3] < box2[1] or  # box1 is above box2
+        box1[1] > box2[3]     # box1 is below box2
+    )
+
+
+def _point_in_box(point: tuple, box: tuple) -> bool:
+    """Check if a point is inside a bounding box."""
+    x, y = point
+    return box[0] <= x <= box[2] and box[1] <= y <= box[3]
+
+
 def associate_dimensions(
     line_pairs: list[tuple[GraphicLine, GraphicLine]],
     dimensions: list[Dimension]
@@ -244,38 +388,62 @@ def associate_dimensions(
     """
     Associate dimension annotations with line pairs.
 
-    A dimension is associated with a line pair if:
-    - It's positioned between or near the two lines
-    - Its orientation roughly matches the lines
+    A dimension is associated with a line pair if it is at least
+    partially inside the bounding box formed by the two lines.
     """
     associations = []
+    used_dims = set()
 
     for pair in line_pairs:
         line1, line2 = pair
+
+        # Get bounding box of the line pair with margin
         line_dist = _distance_between_parallel_lines(line1, line2)
+        margin = line_dist * 2  # Allow dimension to be somewhat outside
+        pair_bbox = _get_line_pair_bbox(line1, line2, margin)
 
         best_dim = None
-        best_score = float('inf')
+        best_dist = float('inf')
 
-        for dim in dimensions:
-            # Check if dimension center is near the line pair
+        for i, dim in enumerate(dimensions):
+            if i in used_dims:
+                continue
+
+            # Dimension bounding box
+            dim_bbox = (
+                min(dim.start_x, dim.end_x),
+                min(dim.start_y, dim.end_y),
+                max(dim.start_x, dim.end_x),
+                max(dim.start_y, dim.end_y)
+            )
+
+            # Check if boxes overlap or dimension center/endpoints are inside
             dim_center = ((dim.start_x + dim.end_x) / 2, (dim.start_y + dim.end_y) / 2)
 
-            d1 = _distance_point_to_line(dim_center, line1)
-            d2 = _distance_point_to_line(dim_center, line2)
+            overlaps = (
+                _boxes_overlap(pair_bbox, dim_bbox) or
+                _point_in_box(dim_center, pair_bbox) or
+                _point_in_box((dim.start_x, dim.start_y), pair_bbox) or
+                _point_in_box((dim.end_x, dim.end_y), pair_bbox)
+            )
 
-            # Score based on how centered the dimension is between lines
-            # and how close it is to the lines overall
-            score = abs(d1 - d2) + min(d1, d2)
-
-            # Dimension should be within reasonable range of the lines
-            max_dist = line_dist * ASSOCIATION_DISTANCE_FACTOR
-            if d1 < max_dist and d2 < max_dist and score < best_score:
-                best_dim = dim
-                best_score = score
+            if overlaps:
+                # Use distance to center of line pair as tiebreaker
+                pair_center = (
+                    (line1.start_x + line1.end_x + line2.start_x + line2.end_x) / 4,
+                    (line1.start_y + line1.end_y + line2.start_y + line2.end_y) / 4
+                )
+                dist = math.sqrt(
+                    (dim_center[0] - pair_center[0]) ** 2 +
+                    (dim_center[1] - pair_center[1]) ** 2
+                )
+                if dist < best_dist:
+                    best_dim = dim
+                    best_dist = dist
 
         if best_dim is not None:
             associations.append((pair, best_dim))
+            used_dims.add(dimensions.index(best_dim))
 
     return associations
 
@@ -331,9 +499,12 @@ def detect_fold_markers(pcb: KiCadPCB, layer: str = FOLD_MARKER_LAYER) -> list[F
     """
     Detect all fold markers in a KiCad PCB.
 
-    Fold markers consist of:
-    - Two parallel dotted lines on the marker layer
-    - A dimension annotation between them specifying the angle
+    Detection approach:
+    1. Start from each dimension annotation on the layer
+    2. Use the dimension's start point to find containing parallel lines
+    3. The closest pair of parallel lines that contains the point is the match
+
+    This avoids confusion when multiple fold markers are close together.
 
     Args:
         pcb: Parsed KiCad PCB
@@ -347,21 +518,38 @@ def detect_fold_markers(pcb: KiCadPCB, layer: str = FOLD_MARKER_LAYER) -> list[F
     if len(lines) < 2:
         return []
 
-    # Find line pairs
-    pairs = find_line_pairs(lines)
-    if not pairs:
-        return []
-
     # Get dimensions on the same layer
     dimensions = pcb.get_dimensions(layer=layer)
+    if not dimensions:
+        return []
 
-    # Associate dimensions with line pairs
-    associations = associate_dimensions(pairs, dimensions)
-
-    # Create fold markers
+    # Track which lines have been used
+    used_lines = set()
     markers = []
 
-    for (line_a, line_b), dim in associations:
+    # For each dimension, find the containing line pair
+    for dim in dimensions:
+        # Use dimension start point as anchor
+        dim_start = (dim.start_x, dim.start_y)
+
+        # Filter out already-used lines
+        available_lines = [l for i, l in enumerate(lines) if i not in used_lines]
+        if len(available_lines) < 2:
+            break
+
+        # Find the line pair containing this dimension's start
+        pair = find_containing_line_pair(dim_start, available_lines)
+
+        if pair is None:
+            continue
+
+        line_a, line_b = pair
+
+        # Mark these lines as used
+        for i, l in enumerate(lines):
+            if l is line_a or l is line_b:
+                used_lines.add(i)
+
         # Parse angle from dimension
         angle = _parse_angle_from_text(dim.text)
         if angle is None:
@@ -370,18 +558,6 @@ def detect_fold_markers(pcb: KiCadPCB, layer: str = FOLD_MARKER_LAYER) -> list[F
         if angle is not None:
             marker = create_fold_marker(line_a, line_b, angle)
             markers.append(marker)
-
-    # Also create markers for line pairs without dimensions (default angle)
-    paired_lines = set()
-    for (line_a, line_b), _ in associations:
-        paired_lines.add(id(line_a))
-        paired_lines.add(id(line_b))
-
-    for line_a, line_b in pairs:
-        if id(line_a) not in paired_lines:
-            # No dimension found - could warn user or use default
-            # For now, skip these
-            pass
 
     return markers
 

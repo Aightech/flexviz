@@ -17,6 +17,7 @@ class FlexConfig:
 
     Attributes:
         flex_thickness: PCB thickness in mm (read from board settings by default)
+        marker_layer: KiCad layer containing fold markers (default: User.1)
         stiffener_layer_top: KiCad layer for top stiffeners (empty = none)
         stiffener_layer_bottom: KiCad layer for bottom stiffeners (empty = none)
         stiffener_thickness: Stiffener material thickness in mm (0 = no stiffener)
@@ -26,6 +27,9 @@ class FlexConfig:
     """
     # PCB parameters
     flex_thickness: float = 1.6  # mm (default PCB thickness, overridden from board settings)
+
+    # Fold marker layer
+    marker_layer: str = "User.1"  # KiCad layer for fold markers
 
     # Stiffener parameters (separate layers for top and bottom)
     stiffener_layer_top: str = ""  # KiCad layer for top stiffeners (empty = none)
@@ -90,6 +94,7 @@ class FlexConfig:
         """Convert to dictionary for serialization."""
         return {
             "flex_thickness": self.flex_thickness,
+            "marker_layer": self.marker_layer,
             "stiffener_layer_top": self.stiffener_layer_top,
             "stiffener_layer_bottom": self.stiffener_layer_bottom,
             "stiffener_thickness": self.stiffener_thickness,
@@ -113,6 +118,7 @@ class FlexConfig:
 
         return cls(
             flex_thickness=data.get("flex_thickness", 0.11),
+            marker_layer=data.get("marker_layer", "User.1"),
             stiffener_layer_top=layer_top,
             stiffener_layer_bottom=layer_bottom,
             stiffener_thickness=data.get("stiffener_thickness", 0.0),

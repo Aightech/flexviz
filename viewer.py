@@ -606,6 +606,18 @@ class FlexViewerFrame(wx.Frame):
         subdiv_sizer.Add(wx.StaticText(control_panel, label="strips"), 0, wx.ALIGN_CENTER_VERTICAL)
         settings_sizer.Add(subdiv_sizer, 0, wx.ALL, 3)
 
+        # Marker layer selection
+        marker_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        marker_sizer.Add(wx.StaticText(control_panel, label="Marker layer:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
+        self.choice_marker_layer = wx.Choice(control_panel, choices=self.available_layers, size=(80, -1))
+        if self.config.marker_layer in self.available_layers:
+            self.choice_marker_layer.SetSelection(self.available_layers.index(self.config.marker_layer))
+        else:
+            self.choice_marker_layer.SetSelection(0)  # Default to first layer
+        self.choice_marker_layer.Bind(wx.EVT_CHOICE, self.on_marker_layer_changed)
+        marker_sizer.Add(self.choice_marker_layer, 0)
+        settings_sizer.Add(marker_sizer, 0, wx.ALL, 3)
+
         right_column.Add(settings_sizer, 0, wx.EXPAND | wx.ALL, 5)
 
         # Stiffener Settings
@@ -926,6 +938,11 @@ class FlexViewerFrame(wx.Frame):
         self.config.stiffener_thickness = self.spin_stiffener_thickness.GetValue()
         self.config.bend_subdivisions = self.spin_subdivisions.GetValue()
 
+        # Marker layer
+        marker_idx = self.choice_marker_layer.GetSelection()
+        if marker_idx >= 0 and marker_idx < len(self.available_layers):
+            self.config.marker_layer = self.available_layers[marker_idx]
+
         # Auto-save settings if we have a PCB filepath
         if self.pcb_filepath:
             try:
@@ -935,6 +952,45 @@ class FlexViewerFrame(wx.Frame):
 
         # Refresh mesh with new settings
         self.update_mesh()
+
+    def on_marker_layer_changed(self, event):
+        """Handle marker layer change - need to re-detect markers."""
+        # Update config
+        marker_idx = self.choice_marker_layer.GetSelection()
+        if marker_idx >= 0 and marker_idx < len(self.available_layers):
+            self.config.marker_layer = self.available_layers[marker_idx]
+
+        # Auto-save
+        if self.pcb_filepath:
+            try:
+                self.config.save_for_pcb(self.pcb_filepath)
+            except Exception:
+                pass
+
+        # Re-detect markers on new layer
+        if self.pcb:
+            new_markers = detect_fold_markers(self.pcb, layer=self.config.marker_layer)
+
+            # Clear old sliders
+            for slider in self.fold_sliders:
+                slider.Destroy()
+            self.fold_sliders = []
+
+            # Update markers and folds
+            self.fold_markers = new_markers
+            self.folds = create_fold_definitions(new_markers)
+
+            # Create new sliders
+            for i, marker in enumerate(new_markers):
+                slider = FoldSlider(
+                    self.fold_panel, i, marker.angle_degrees,
+                    self.on_fold_angle_changed
+                )
+                self.fold_sizer.Add(slider, 0, wx.EXPAND | wx.ALL, 2)
+                self.fold_sliders.append(slider)
+
+            self.fold_panel.Layout()
+            self.update_mesh()
 
     def on_save_settings(self, event):
         """Save settings to file."""
@@ -986,7 +1042,7 @@ class FlexViewerFrame(wx.Frame):
             # Reload PCB from disk
             self.pcb = KiCadPCB.load(self.pcb_filepath)
             self.board_geometry = extract_geometry(self.pcb)
-            new_markers = detect_fold_markers(self.pcb)
+            new_markers = detect_fold_markers(self.pcb, layer=self.config.marker_layer)
 
             # Preserve current fold angles if marker count matches
             old_angles = [s.get_angle() for s in self.fold_sliders]
@@ -1099,21 +1155,31 @@ class FlexViewerFrame(wx.Frame):
             # Get current settings from viewer
             subdivisions = self.config.bend_subdivisions if hasattr(self, 'config') else 4
             stiffener_thickness = self.config.stiffener_thickness if hasattr(self, 'config') else 0.2
+            marker_layer = self.config.marker_layer if hasattr(self, 'config') else "User.1"
+            has_stiffener = self.config.has_stiffener if hasattr(self, 'config') else False
+
+            # Build command with current settings
+            cmd_options = []
+            cmd_options.append(f'--subdivisions {subdivisions}')
+            cmd_options.append(f'--marker-layer "{marker_layer}"')
+            if has_stiffener:
+                cmd_options.append(f'--stiffener-thickness {stiffener_thickness}')
+            else:
+                cmd_options.append('--no-stiffeners')
+
+            options_str = " ".join(cmd_options)
 
             commands = f"""STEP export must run from command line (KiCad library conflicts).
 
 Copy and paste these commands into a terminal:
 
 source "{venv_activate}"
-python "{cli_script}" "{pcb_path}" "{output_path}"
+python "{cli_script}" "{pcb_path}" "{output_path}" {options_str}
 
-Common options (add to command above):
+Additional options:
   --3d-models              Include 3D models from footprints
   --components             Include component boxes
   --pads                   Include pads
-  --no-stiffeners          Disable stiffeners
-  --stiffener-thickness N  Stiffener thickness (current: {stiffener_thickness}mm)
-  --subdivisions N         Bend quality (current: {subdivisions})
   --flat                   Export unbent board"""
 
             wx.MessageBox(commands, "STEP Export Commands", wx.OK | wx.ICON_INFORMATION)
@@ -1192,10 +1258,12 @@ if __name__ == "__main__":
     if os.path.exists(test_file):
         pcb = KiCadPCB.load(test_file)
         geom = extract_geometry(pcb)
-        markers = detect_fold_markers(pcb)
 
         # Load or create config
         config = FlexConfig.load_for_pcb(test_file)
+
+        # Detect markers on configured layer
+        markers = detect_fold_markers(pcb, layer=config.marker_layer)
 
         print(f"Loaded: {test_file}")
         print(f"  Outline: {len(geom.outline)} vertices")

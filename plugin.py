@@ -84,9 +84,11 @@ class FlexViewerTestAction(pcbnew.ActionPlugin):
                 return
 
             # Parse the board
+            from .config import FlexConfig
             pcb = KiCadPCB.load(board_path)
             geom = extract_geometry(pcb)
-            markers = detect_fold_markers(pcb)
+            config = FlexConfig.load_for_pcb(board_path)
+            markers = detect_fold_markers(pcb, layer=config.marker_layer)
 
             # Show results
             msg = f"""Flex Viewer Plugin Test - SUCCESS
@@ -125,7 +127,7 @@ class CreateFoldAction(pcbnew.ActionPlugin):
         self.category = "Flex PCB"
         self.description = "Create a fold marker for flex PCB visualization"
         self.show_toolbar_button = True
-        self.icon_file_name = os.path.join(PLUGIN_DIR, "resources", "icon_create_fold.png")
+        self.icon_file_name = os.path.join(PLUGIN_DIR, "resources", "markericon.drawio.svg")
 
     def Run(self):
         try:
@@ -148,7 +150,7 @@ class OpenViewerAction(pcbnew.ActionPlugin):
         self.category = "Flex PCB"
         self.description = "Open the 3D viewer to visualize the folded flex PCB"
         self.show_toolbar_button = True
-        self.icon_file_name = os.path.join(PLUGIN_DIR, "resources", "icon_open_viewer.png")
+        self.icon_file_name = os.path.join(PLUGIN_DIR, "resources", "viewericon.drawio.svg")
 
     def Run(self):
         global _viewer_frame
@@ -198,9 +200,11 @@ class OpenViewerAction(pcbnew.ActionPlugin):
                 return
 
             # Parse the board
+            from .config import FlexConfig
             pcb = KiCadPCB.load(board_path)
             geom = extract_geometry(pcb)
-            markers = detect_fold_markers(pcb)
+            config = FlexConfig.load_for_pcb(board_path)
+            markers = detect_fold_markers(pcb, layer=config.marker_layer)
 
             # Open viewer window with PCB reference for stiffeners and config persistence
             frame = FlexViewerFrame(

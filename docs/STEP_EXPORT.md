@@ -24,6 +24,7 @@ Usage: step_export_cli.py <input.kicad_pcb> <output.step> [options]
 Board Options:
   --flat                   Export flat (unbent) board
   --subdivisions N         Bend zone subdivisions (default: from config or 4)
+  --marker-layer LAYER     Layer containing fold markers (default: from config or User.1)
 
 Content Options:
   --traces                 Include copper traces

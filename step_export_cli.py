@@ -15,6 +15,7 @@ Options:
     --stiffeners        Include stiffeners (default: enabled)
     --no-stiffeners     Disable stiffeners
     --stiffener-thickness  Stiffener thickness in mm (default: from config or 0.2)
+    --marker-layer      Layer containing fold markers (default: from config or User.1)
 
 Example:
     source venv/bin/activate
@@ -71,6 +72,8 @@ Examples:
                         help='Disable stiffeners')
     parser.add_argument('--stiffener-thickness', type=float, default=None,
                         help='Stiffener thickness in mm (default: from config or 0.2)')
+    parser.add_argument('--marker-layer', type=str, default=None,
+                        help='Layer containing fold markers (default: from config or User.1)')
     parser.add_argument('--max-faces', type=int, default=5000,
                         help='Maximum faces to export (default: 5000)')
 
@@ -111,8 +114,13 @@ Examples:
             # Default stiffener thickness if not configured
             config.stiffener_thickness = 0.2
 
+        # Marker layer
+        if args.marker_layer is not None:
+            config.marker_layer = args.marker_layer
+        marker_layer = config.marker_layer if config.marker_layer else "User.1"
+
         # Detect fold markers (unless flat export)
-        markers = None if args.flat else detect_fold_markers(pcb)
+        markers = None if args.flat else detect_fold_markers(pcb, layer=marker_layer)
 
         if markers:
             print(f"Found {len(markers)} fold marker(s)")
@@ -129,7 +137,7 @@ Examples:
                 print(f"Found {len(stiffeners)} stiffener region(s), thickness: {config.stiffener_thickness}mm")
 
         # Print options
-        opts = [f"subdivisions={subdivisions}"]
+        opts = [f"subdivisions={subdivisions}", f"marker-layer={marker_layer}"]
         if args.traces:
             opts.append("traces")
         if args.pads:
