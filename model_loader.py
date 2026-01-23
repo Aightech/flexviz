@@ -1,9 +1,11 @@
 """
 3D Model loader for KiCad component models.
 
-Supports:
-- STEP files (.step, .stp)
-- WRL/VRML files (.wrl)
+Graceful degradation strategy:
+1. OCC (OpenCASCADE) - Best for STEP files, may be available in KiCad environment
+2. trimesh - Good fallback, supports STEP (with cascadio), WRL, and many formats
+3. Native WRL parser - No dependencies, handles KiCad's VRML files
+4. Placeholder boxes - Always works, used when no loader available
 
 Handles KiCad environment variable expansion for model paths.
 """
@@ -13,7 +15,7 @@ import re
 import math
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Tuple, List
 
 try:
     from .mesh import Mesh
@@ -21,12 +23,57 @@ except ImportError:
     from mesh import Mesh
 
 
+# Track available loaders
+_occ_available = False
+_trimesh_available = False
+
+# Try to import OCC (OpenCASCADE)
+try:
+    from OCC.Core.STEPControl import STEPControl_Reader
+    from OCC.Core.IFSelect import IFSelect_RetDone
+    from OCC.Core.BRepMesh import BRepMesh_IncrementalMesh
+    from OCC.Core.TopExp import TopExp_Explorer
+    from OCC.Core.TopAbs import TopAbs_FACE
+    from OCC.Core.BRep import BRep_Tool
+    from OCC.Core.TopLoc import TopLoc_Location
+    from OCC.Core.Bnd import Bnd_Box
+    from OCC.Core.BRepBndLib import brepbndlib
+    _occ_available = True
+except ImportError:
+    pass
+
+# Try to import trimesh
+try:
+    import trimesh
+    _trimesh_available = True
+except ImportError:
+    pass
+
+
+def get_loader_status() -> dict:
+    """
+    Get status of available model loaders.
+
+    Returns:
+        Dict with loader availability and capabilities
+    """
+    return {
+        'occ': _occ_available,
+        'trimesh': _trimesh_available,
+        'native_wrl': True,  # Always available
+        'step_support': _occ_available or _trimesh_available,
+        'wrl_support': True,
+        'best_loader': 'occ' if _occ_available else ('trimesh' if _trimesh_available else 'native_wrl'),
+    }
+
+
 @dataclass
 class LoadedModel:
     """A loaded 3D model."""
     mesh: Mesh
     source_path: str
-    # Bounding box in model space
+    loader_used: str = "unknown"
+    # Bounding box in model space (mm)
     min_point: tuple[float, float, float] = (0, 0, 0)
     max_point: tuple[float, float, float] = (0, 0, 0)
 
@@ -136,14 +183,110 @@ def get_model_paths(component, pcb_dir: str = None) -> list[tuple[str, dict]]:
     return result
 
 
-# Optional: trimesh-based loading
-_trimesh_available = False
-try:
-    import trimesh
-    _trimesh_available = True
-except ImportError:
-    pass
+# =============================================================================
+# OCC (OpenCASCADE) Loader - Best for STEP files
+# =============================================================================
 
+def load_step_occ(path: str) -> Optional[LoadedModel]:
+    """
+    Load a STEP file using OpenCASCADE.
+
+    Args:
+        path: Path to STEP file
+
+    Returns:
+        LoadedModel or None if loading fails
+    """
+    if not _occ_available:
+        return None
+
+    try:
+        # Read STEP file
+        reader = STEPControl_Reader()
+        status = reader.ReadFile(path)
+
+        if status != IFSelect_RetDone:
+            return None
+
+        reader.TransferRoots()
+        shape = reader.OneShape()
+
+        if shape.IsNull():
+            return None
+
+        # Mesh the shape
+        mesh_algo = BRepMesh_IncrementalMesh(shape, 0.1)  # 0.1mm tolerance
+        mesh_algo.Perform()
+
+        # Extract triangles
+        mesh = Mesh()
+        vertex_map = {}
+
+        explorer = TopExp_Explorer(shape, TopAbs_FACE)
+        while explorer.More():
+            face = explorer.Current()
+            location = TopLoc_Location()
+            triangulation = BRep_Tool.Triangulation(face, location)
+
+            if triangulation is not None:
+                # Get transformation
+                trsf = location.Transformation()
+
+                # Extract vertices
+                nodes = triangulation.Nodes()
+                for i in range(1, triangulation.NbNodes() + 1):
+                    pt = nodes.Value(i)
+                    pt_transformed = pt.Transformed(trsf)
+                    v = (pt_transformed.X(), pt_transformed.Y(), pt_transformed.Z())
+                    if v not in vertex_map:
+                        vertex_map[v] = mesh.add_vertex(v)
+
+                # Extract triangles
+                triangles = triangulation.Triangles()
+                for i in range(1, triangulation.NbTriangles() + 1):
+                    tri = triangles.Value(i)
+                    n1, n2, n3 = tri.Get()
+
+                    pt1 = nodes.Value(n1).Transformed(trsf)
+                    pt2 = nodes.Value(n2).Transformed(trsf)
+                    pt3 = nodes.Value(n3).Transformed(trsf)
+
+                    v1 = (pt1.X(), pt1.Y(), pt1.Z())
+                    v2 = (pt2.X(), pt2.Y(), pt2.Z())
+                    v3 = (pt3.X(), pt3.Y(), pt3.Z())
+
+                    idx1 = vertex_map[v1]
+                    idx2 = vertex_map[v2]
+                    idx3 = vertex_map[v3]
+
+                    mesh.add_triangle(idx1, idx2, idx3, (180, 180, 180))
+
+            explorer.Next()
+
+        if not mesh.vertices:
+            return None
+
+        # Get bounding box
+        bbox = Bnd_Box()
+        brepbndlib.Add(shape, bbox)
+        xmin, ymin, zmin, xmax, ymax, zmax = bbox.Get()
+
+        return LoadedModel(
+            mesh=mesh,
+            source_path=path,
+            loader_used='occ',
+            min_point=(xmin, ymin, zmin),
+            max_point=(xmax, ymax, zmax)
+        )
+
+    except Exception as e:
+        print(f"OCC loader failed for {path}: {e}")
+        return None
+
+
+# =============================================================================
+# trimesh Loader - Fallback for STEP and other formats
+# =============================================================================
 
 def load_model_trimesh(path: str) -> Optional[LoadedModel]:
     """
@@ -187,20 +330,142 @@ def load_model_trimesh(path: str) -> Optional[LoadedModel]:
         return LoadedModel(
             mesh=mesh,
             source_path=path,
+            loader_used='trimesh',
             min_point=min_pt,
             max_point=max_pt
         )
 
     except Exception as e:
-        print(f"Warning: Could not load model {path}: {e}")
+        print(f"trimesh loader failed for {path}: {e}")
         return None
 
 
+# =============================================================================
+# Native WRL (VRML) Parser - No dependencies
+# =============================================================================
+
+def parse_wrl_native(path: str) -> Optional[LoadedModel]:
+    """
+    Parse a VRML 2.0 (.wrl) file natively without external dependencies.
+
+    Handles the common KiCad WRL format with IndexedFaceSet geometry.
+
+    Args:
+        path: Path to WRL file
+
+    Returns:
+        LoadedModel or None if parsing fails
+    """
+    try:
+        with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+            content = f.read()
+
+        mesh = Mesh()
+        all_vertices = []
+        all_faces = []
+
+        # Find all IndexedFaceSet blocks
+        # Pattern: coordIndex [...] followed by coord Coordinate { point [...] }
+        ifs_pattern = re.compile(
+            r'IndexedFaceSet\s*\{\s*'
+            r'(?:[^}]*?)'
+            r'coordIndex\s*\[([^\]]+)\]'
+            r'(?:[^}]*?)'
+            r'coord\s+Coordinate\s*\{\s*point\s*\[([^\]]+)\]',
+            re.DOTALL
+        )
+
+        # Also try alternate order (coord before coordIndex)
+        ifs_pattern2 = re.compile(
+            r'IndexedFaceSet\s*\{\s*'
+            r'(?:[^}]*?)'
+            r'coord\s+Coordinate\s*\{\s*point\s*\[([^\]]+)\]'
+            r'(?:[^}]*?)'
+            r'coordIndex\s*\[([^\]]+)\]',
+            re.DOTALL
+        )
+
+        matches = list(ifs_pattern.findall(content))
+        matches2 = list(ifs_pattern2.findall(content))
+
+        # Combine matches (swap order for pattern2)
+        all_matches = matches + [(m[1], m[0]) for m in matches2]
+
+        if not all_matches:
+            return None
+
+        vertex_offset = 0
+
+        for coord_indices_str, points_str in all_matches:
+            # Parse vertices: "x y z, x y z, ..."
+            vertices = []
+            point_parts = re.findall(r'[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?', points_str)
+
+            for i in range(0, len(point_parts) - 2, 3):
+                x = float(point_parts[i])
+                y = float(point_parts[i + 1])
+                z = float(point_parts[i + 2])
+                vertices.append((x, y, z))
+                mesh.add_vertex((x, y, z))
+
+            # Parse face indices: "0,1,2,-1,3,4,5,-1,..."
+            index_parts = re.findall(r'-?\d+', coord_indices_str)
+            current_face = []
+
+            for idx_str in index_parts:
+                idx = int(idx_str)
+                if idx == -1:
+                    # End of face
+                    if len(current_face) >= 3:
+                        # Adjust indices with offset
+                        adjusted = [i + vertex_offset for i in current_face]
+                        if len(adjusted) == 3:
+                            mesh.add_triangle(adjusted[0], adjusted[1], adjusted[2], (180, 180, 180))
+                        elif len(adjusted) == 4:
+                            mesh.add_quad(adjusted[0], adjusted[1], adjusted[2], adjusted[3], (180, 180, 180))
+                        else:
+                            # Fan triangulation for polygons
+                            for i in range(1, len(adjusted) - 1):
+                                mesh.add_triangle(adjusted[0], adjusted[i], adjusted[i + 1], (180, 180, 180))
+                    current_face = []
+                else:
+                    current_face.append(idx)
+
+            vertex_offset += len(vertices)
+
+        if not mesh.vertices:
+            return None
+
+        # Calculate bounding box
+        xs = [v[0] for v in mesh.vertices]
+        ys = [v[1] for v in mesh.vertices]
+        zs = [v[2] for v in mesh.vertices]
+
+        return LoadedModel(
+            mesh=mesh,
+            source_path=path,
+            loader_used='native_wrl',
+            min_point=(min(xs), min(ys), min(zs)),
+            max_point=(max(xs), max(ys), max(zs))
+        )
+
+    except Exception as e:
+        print(f"Native WRL parser failed for {path}: {e}")
+        return None
+
+
+# =============================================================================
+# Main Loader Function - Graceful Degradation
+# =============================================================================
+
 def load_model(path: str) -> Optional[LoadedModel]:
     """
-    Load a 3D model from file.
+    Load a 3D model from file using best available loader.
 
-    Tries available loaders in order of preference.
+    Graceful degradation order:
+    1. For STEP files: OCC → trimesh
+    2. For WRL files: trimesh → native parser
+    3. Returns None if all loaders fail (caller uses placeholder)
 
     Args:
         path: Path to model file
@@ -208,52 +473,49 @@ def load_model(path: str) -> Optional[LoadedModel]:
     Returns:
         LoadedModel or None if loading fails
     """
-    # Try trimesh first (supports many formats including STEP with cascadio)
-    if _trimesh_available:
-        result = load_model_trimesh(path)
+    ext = os.path.splitext(path)[1].lower()
+
+    # STEP files
+    if ext in ('.step', '.stp'):
+        # Try OCC first (best for STEP)
+        if _occ_available:
+            result = load_step_occ(path)
+            if result:
+                return result
+
+        # Try trimesh (needs cascadio for STEP)
+        if _trimesh_available:
+            result = load_model_trimesh(path)
+            if result:
+                return result
+
+        return None
+
+    # WRL/VRML files
+    if ext in ('.wrl', '.vrml'):
+        # Try trimesh first (better material handling)
+        if _trimesh_available:
+            result = load_model_trimesh(path)
+            if result:
+                return result
+
+        # Fall back to native parser
+        result = parse_wrl_native(path)
         if result:
             return result
 
-    # No loader available
-    return None
+        return None
 
-
-def create_component_model_mesh(
-    component,
-    pcb_dir: str = None,
-    fallback_box: bool = True
-) -> Optional[Mesh]:
-    """
-    Create a mesh for a component from its 3D model.
-
-    Args:
-        component: ComponentGeometry
-        pcb_dir: Directory of PCB file for relative paths
-        fallback_box: If True, return placeholder box if model can't be loaded
-
-    Returns:
-        Mesh or None
-    """
-    # Try to load actual 3D model
-    model_paths = get_model_paths(component, pcb_dir)
-
-    for resolved_path, model_info in model_paths:
-        loaded = load_model(resolved_path)
-        if loaded:
-            # Apply transforms: scale, rotate, offset
-            mesh = loaded.mesh
-
-            # TODO: Apply model_info transforms
-            # For now, return the mesh as-is (transforms need matrix operations)
-
-            return mesh
-
-    # Fallback to placeholder box
-    if fallback_box:
-        return None  # Let caller use default box
+    # Other formats - try trimesh
+    if _trimesh_available:
+        return load_model_trimesh(path)
 
     return None
 
+
+# =============================================================================
+# Transform Utilities
+# =============================================================================
 
 def apply_model_transform(
     mesh: Mesh,
@@ -359,3 +621,43 @@ def apply_model_transform(
                 result.add_quad(face[0], face[1], face[2], face[3], color)
 
     return result
+
+
+def create_component_model_mesh(
+    component,
+    pcb_dir: str = None,
+    pcb_thickness: float = 0
+) -> Optional[Mesh]:
+    """
+    Create a mesh for a component from its 3D model.
+
+    Uses graceful degradation to load models with available loaders.
+
+    Args:
+        component: ComponentGeometry with models list
+        pcb_dir: Directory of PCB file for relative paths
+        pcb_thickness: Board thickness for positioning
+
+    Returns:
+        Transformed Mesh or None if no model could be loaded
+    """
+    model_paths = get_model_paths(component, pcb_dir)
+
+    for resolved_path, model_info in model_paths:
+        loaded = load_model(resolved_path)
+        if loaded:
+            # Apply transforms
+            is_back = component.layer == "B.Cu"
+            transformed = apply_model_transform(
+                loaded.mesh,
+                component.center,
+                component.angle,
+                model_info['offset'],
+                model_info['scale'],
+                model_info['rotate'],
+                pcb_thickness,
+                is_back
+            )
+            return transformed
+
+    return None
