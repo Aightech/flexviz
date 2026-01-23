@@ -157,6 +157,7 @@ class PadGeometry:
     size: tuple[float, float]  # (width, height)
     angle: float = 0  # rotation in degrees
     drill: float = 0  # drill hole diameter (0 for SMD)
+    layer: str = "F.Cu"  # Primary layer (F.Cu or B.Cu)
 
 
 @dataclass
@@ -278,12 +279,23 @@ def extract_geometry(pcb: KiCadPCB) -> BoardGeometry:
             px = p.at_x * cos_a - p.at_y * sin_a + fp.at_x
             py = p.at_x * sin_a + p.at_y * cos_a + fp.at_y
 
+            # Determine pad layer from pad's layers list or component layer
+            # SMD pads: use pad's layer if available, else component layer
+            # Through-hole: use component layer for visualization
+            pad_layer = fp.layer
+            if p.layers:
+                if "B.Cu" in p.layers and "F.Cu" not in p.layers:
+                    pad_layer = "B.Cu"
+                elif "F.Cu" in p.layers:
+                    pad_layer = "F.Cu"
+
             pads.append(PadGeometry(
                 center=(px, py),
                 shape=p.shape,
                 size=(p.size_x, p.size_y),
                 angle=p.at_angle + fp.at_angle,
-                drill=p.drill
+                drill=p.drill,
+                layer=pad_layer
             ))
 
         components.append(ComponentGeometry(

@@ -996,7 +996,8 @@ def create_trace_mesh(
 def create_pad_mesh(
     pad: PadGeometry,
     z_offset: float,
-    regions: list[Region] = None
+    regions: list[Region] = None,
+    pcb_thickness: float = 0.0
 ) -> Mesh:
     """
     Create a 3D mesh for a pad.
@@ -1005,6 +1006,7 @@ def create_pad_mesh(
         pad: Pad geometry
         z_offset: Z offset for the pad (along surface normal)
         regions: List of Region objects for region-based transformation
+        pcb_thickness: PCB thickness for back layer pad positioning
 
     Returns:
         Mesh representing the pad
@@ -1023,24 +1025,40 @@ def create_pad_mesh(
         if containing_region:
             region_recipe = get_region_recipe(containing_region)
 
+    # Determine if pad is on back layer
+    is_back_layer = pad.layer == "B.Cu"
+
     # Transform vertices and offset along surface normal
     vertices_3d = []
     for v in poly.vertices:
         v3d, normal = transform_point_and_normal(v, region_recipe)
-        # Offset along normal direction, not global Z
+
+        if is_back_layer:
+            # Back layer: offset from bottom surface (negative normal direction)
+            # First go to bottom surface, then offset slightly more
+            total_offset = -(pcb_thickness + z_offset)
+        else:
+            # Front layer: offset from top surface (positive normal direction)
+            total_offset = z_offset
+
         vertices_3d.append((
-            v3d[0] + normal[0] * z_offset,
-            v3d[1] + normal[1] * z_offset,
-            v3d[2] + normal[2] * z_offset
+            v3d[0] + normal[0] * total_offset,
+            v3d[1] + normal[1] * total_offset,
+            v3d[2] + normal[2] * total_offset
         ))
 
     # Add vertices
     indices = [mesh.add_vertex(v) for v in vertices_3d]
 
     # Create face (fan triangulation)
+    # Reverse winding for back layer so normals face outward
     n = len(indices)
-    for i in range(1, n - 1):
-        mesh.add_triangle(indices[0], indices[i], indices[i + 1], COLOR_PAD)
+    if is_back_layer:
+        for i in range(1, n - 1):
+            mesh.add_triangle(indices[0], indices[i + 1], indices[i], COLOR_PAD)
+    else:
+        for i in range(1, n - 1):
+            mesh.add_triangle(indices[0], indices[i], indices[i + 1], COLOR_PAD)
 
     return mesh
 
@@ -1048,7 +1066,8 @@ def create_pad_mesh(
 def create_component_mesh(
     component: ComponentGeometry,
     height: float,
-    regions: list[Region] = None
+    regions: list[Region] = None,
+    pcb_thickness: float = 0.0
 ) -> Mesh:
     """
     Create a 3D mesh for a component (as a box).
@@ -1057,6 +1076,7 @@ def create_component_mesh(
         component: Component geometry
         height: Component height (along surface normal)
         regions: List of Region objects for region-based transformation
+        pcb_thickness: PCB thickness for back layer component positioning
 
     Returns:
         Mesh representing the component
@@ -1075,19 +1095,36 @@ def create_component_mesh(
         if containing_region:
             region_recipe = get_region_recipe(containing_region)
 
-    # Transform bottom vertices and get normals
-    bottom_3d = []
+    # Determine if component is on back layer
+    is_back_layer = component.layer == "B.Cu"
+
+    # Transform vertices and get normals
+    base_3d = []
     normals = []
     for v in box.vertices:
         v3d, normal = transform_point_and_normal(v, region_recipe)
-        bottom_3d.append(v3d)
+        base_3d.append(v3d)
         normals.append(normal)
 
-    # Create top vertices offset along surface normal
-    top_3d = [
-        (v[0] + n[0] * height, v[1] + n[1] * height, v[2] + n[2] * height)
-        for v, n in zip(bottom_3d, normals)
-    ]
+    if is_back_layer:
+        # Back layer: component extends downward from PCB bottom
+        # PCB surface is at base_3d, bottom surface is at -pcb_thickness
+        # Component goes from bottom surface to bottom surface - height
+        top_3d = [
+            (v[0] - n[0] * pcb_thickness, v[1] - n[1] * pcb_thickness, v[2] - n[2] * pcb_thickness)
+            for v, n in zip(base_3d, normals)
+        ]
+        bottom_3d = [
+            (v[0] - n[0] * (pcb_thickness + height), v[1] - n[1] * (pcb_thickness + height), v[2] - n[2] * (pcb_thickness + height))
+            for v, n in zip(base_3d, normals)
+        ]
+    else:
+        # Front layer: component extends upward from PCB top
+        bottom_3d = base_3d
+        top_3d = [
+            (v[0] + n[0] * height, v[1] + n[1] * height, v[2] + n[2] * height)
+            for v, n in zip(base_3d, normals)
+        ]
 
     # Add vertices
     n = len(bottom_3d)
@@ -1412,13 +1449,13 @@ def create_board_geometry_mesh(
     if include_pads:
         z_offset = 0.02  # Above traces
         for pad in board.all_pads:
-            pad_mesh = create_pad_mesh(pad, z_offset, active_regions)
+            pad_mesh = create_pad_mesh(pad, z_offset, active_regions, board.thickness)
             mesh.merge(pad_mesh)
 
     # Components
     if include_components:
         for comp in board.components:
-            comp_mesh = create_component_mesh(comp, component_height, active_regions)
+            comp_mesh = create_component_mesh(comp, component_height, active_regions, board.thickness)
             mesh.merge(comp_mesh)
 
     # Stiffeners
