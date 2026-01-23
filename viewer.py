@@ -85,6 +85,12 @@ class GLCanvas(glcanvas.GLCanvas):
         glLightfv(GL_LIGHT0, GL_AMBIENT, [0.3, 0.3, 0.3, 1.0])
         glLightfv(GL_LIGHT0, GL_DIFFUSE, [0.8, 0.8, 0.8, 1.0])
 
+        # Enable two-sided lighting for 3D models with inconsistent face winding
+        glLightModeli(GL_LIGHT_MODEL_TWO_SIDE, GL_TRUE)
+
+        # Normalize normals (important when models have different scales)
+        glEnable(GL_NORMALIZE)
+
         # Background color (dark gray)
         glClearColor(0.2, 0.2, 0.2, 1.0)
 
