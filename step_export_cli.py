@@ -6,14 +6,20 @@ Usage:
     python step_export_cli.py <input.kicad_pcb> <output.step> [options]
 
 Options:
-    --flat          Export flat (unbent) board
-    --subdivisions  Bend zone subdivisions (default: 4)
-    --traces        Include copper traces
-    --pads          Include pads
+    --flat              Export flat (unbent) board
+    --subdivisions N    Bend zone subdivisions (default: 4)
+    --traces            Include copper traces
+    --pads              Include pads
+    --components        Include component boxes
+    --3d-models         Include 3D models from footprints
+    --stiffeners        Include stiffeners (default: enabled)
+    --no-stiffeners     Disable stiffeners
+    --stiffener-thickness  Stiffener thickness in mm (default: from config or 0.2)
 
 Example:
     source venv/bin/activate
     python step_export_cli.py my_board.kicad_pcb my_board.step
+    python step_export_cli.py my_board.kicad_pcb my_board.step --3d-models --pads
 """
 
 import sys
@@ -23,11 +29,13 @@ import argparse
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from step_export import is_step_export_available, mesh_to_step, board_geometry_to_step
+from step_export import is_step_export_available, mesh_to_step
 from mesh import create_board_geometry_mesh
 from geometry import extract_geometry
 from markers import detect_fold_markers
 from kicad_parser import KiCadPCB
+from config import FlexConfig
+from stiffener import extract_stiffeners
 
 
 def main():
@@ -38,19 +46,31 @@ def main():
 Examples:
   %(prog)s board.kicad_pcb output.step
   %(prog)s board.kicad_pcb output.step --flat
-  %(prog)s board.kicad_pcb output.step --subdivisions 8 --pads
+  %(prog)s board.kicad_pcb output.step --3d-models --pads
+  %(prog)s board.kicad_pcb output.step --no-stiffeners
+  %(prog)s board.kicad_pcb output.step --stiffener-thickness 0.3
         """
     )
     parser.add_argument('input', help='Input KiCad PCB file (.kicad_pcb)')
     parser.add_argument('output', help='Output STEP file (.step)')
     parser.add_argument('--flat', action='store_true',
                         help='Export flat (unbent) board')
-    parser.add_argument('--subdivisions', type=int, default=4,
-                        help='Bend zone subdivisions (default: 4)')
+    parser.add_argument('--subdivisions', type=int, default=None,
+                        help='Bend zone subdivisions (default: from config or 4)')
     parser.add_argument('--traces', action='store_true',
                         help='Include copper traces')
     parser.add_argument('--pads', action='store_true',
                         help='Include pads')
+    parser.add_argument('--components', action='store_true',
+                        help='Include component boxes (simple 3D representation)')
+    parser.add_argument('--3d-models', dest='models_3d', action='store_true',
+                        help='Include 3D models from footprints')
+    parser.add_argument('--stiffeners', action='store_true', default=True,
+                        help='Include stiffeners (default: enabled)')
+    parser.add_argument('--no-stiffeners', dest='stiffeners', action='store_false',
+                        help='Disable stiffeners')
+    parser.add_argument('--stiffener-thickness', type=float, default=None,
+                        help='Stiffener thickness in mm (default: from config or 0.2)')
     parser.add_argument('--max-faces', type=int, default=5000,
                         help='Maximum faces to export (default: 5000)')
 
@@ -75,6 +95,21 @@ Examples:
         # Load PCB
         pcb = KiCadPCB.load(args.input)
         geom = extract_geometry(pcb)
+        pcb_dir = os.path.dirname(os.path.abspath(args.input))
+
+        # Load saved config for this PCB (if exists)
+        config = FlexConfig.load_for_pcb(args.input)
+
+        # Override config with command-line args
+        if args.subdivisions is not None:
+            config.bend_subdivisions = args.subdivisions
+        subdivisions = config.bend_subdivisions if config.bend_subdivisions > 0 else 4
+
+        if args.stiffener_thickness is not None:
+            config.stiffener_thickness = args.stiffener_thickness
+        elif config.stiffener_thickness == 0:
+            # Default stiffener thickness if not configured
+            config.stiffener_thickness = 0.2
 
         # Detect fold markers (unless flat export)
         markers = None if args.flat else detect_fold_markers(pcb)
@@ -85,7 +120,27 @@ Examples:
             print("No fold markers found (exporting flat)")
 
         print(f"Board outline: {len(geom.outline.vertices)} vertices")
-        print(f"Options: subdivisions={args.subdivisions}, traces={args.traces}, pads={args.pads}")
+
+        # Extract stiffeners if enabled
+        stiffeners = None
+        if args.stiffeners and not args.flat:
+            stiffeners = extract_stiffeners(pcb, config)
+            if stiffeners:
+                print(f"Found {len(stiffeners)} stiffener region(s), thickness: {config.stiffener_thickness}mm")
+
+        # Print options
+        opts = [f"subdivisions={subdivisions}"]
+        if args.traces:
+            opts.append("traces")
+        if args.pads:
+            opts.append("pads")
+        if args.components:
+            opts.append("components")
+        if args.models_3d:
+            opts.append("3d-models")
+        if stiffeners:
+            opts.append(f"stiffeners({len(stiffeners)})")
+        print(f"Options: {', '.join(opts)}")
 
         # Generate mesh
         print("Generating mesh...")
@@ -94,9 +149,13 @@ Examples:
             markers=markers,
             include_traces=args.traces,
             include_pads=args.pads,
-            include_components=False,
+            include_components=args.components and not args.models_3d,
+            include_3d_models=args.models_3d,
+            pcb_dir=pcb_dir,
+            pcb=pcb,
             subdivide_length=1.0,
-            num_bend_subdivisions=args.subdivisions,
+            num_bend_subdivisions=subdivisions,
+            stiffeners=stiffeners,
             apply_bend=not args.flat
         )
 

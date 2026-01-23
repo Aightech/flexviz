@@ -21,18 +21,33 @@ python step_export_cli.py your_board.kicad_pcb output.step
 ```
 Usage: step_export_cli.py <input.kicad_pcb> <output.step> [options]
 
-Options:
-  --flat              Export flat (unbent) board
-  --subdivisions N    Bend zone subdivisions (default: 4)
-  --traces            Include copper traces
-  --pads              Include pads
-  --max-faces N       Maximum faces to export (default: 5000)
+Board Options:
+  --flat                   Export flat (unbent) board
+  --subdivisions N         Bend zone subdivisions (default: from config or 4)
+
+Content Options:
+  --traces                 Include copper traces
+  --pads                   Include pads
+  --components             Include component boxes (simple 3D)
+  --3d-models              Include 3D models from footprints
+
+Stiffener Options:
+  --stiffeners             Include stiffeners (default: enabled)
+  --no-stiffeners          Disable stiffeners
+  --stiffener-thickness N  Stiffener thickness in mm (default: from config or 0.2)
+
+Performance Options:
+  --max-faces N            Maximum faces to export (default: 5000)
 
 Examples:
   python step_export_cli.py board.kicad_pcb output.step
   python step_export_cli.py board.kicad_pcb flat.step --flat
-  python step_export_cli.py board.kicad_pcb detailed.step --subdivisions 8 --pads
+  python step_export_cli.py board.kicad_pcb detailed.step --3d-models --pads
+  python step_export_cli.py board.kicad_pcb output.step --no-stiffeners
+  python step_export_cli.py board.kicad_pcb output.step --stiffener-thickness 0.3
 ```
+
+The CLI automatically loads saved settings from the viewer (if you saved them), so subdivisions and stiffener thickness will use your configured values by default.
 
 ## Installation
 

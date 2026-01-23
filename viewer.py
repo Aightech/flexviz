@@ -1096,6 +1096,10 @@ class FlexViewerFrame(wx.Frame):
             else:
                 output_path = "output.step"
 
+            # Get current settings from viewer
+            subdivisions = self.config.bend_subdivisions if hasattr(self, 'config') else 4
+            stiffener_thickness = self.config.stiffener_thickness if hasattr(self, 'config') else 0.2
+
             commands = f"""STEP export must run from command line (KiCad library conflicts).
 
 Copy and paste these commands into a terminal:
@@ -1103,10 +1107,14 @@ Copy and paste these commands into a terminal:
 source "{venv_activate}"
 python "{cli_script}" "{pcb_path}" "{output_path}"
 
-Options:
-  --flat           Export unbent board
-  --subdivisions N Bend quality (default: 4)
-  --pads           Include pads"""
+Common options (add to command above):
+  --3d-models              Include 3D models from footprints
+  --components             Include component boxes
+  --pads                   Include pads
+  --no-stiffeners          Disable stiffeners
+  --stiffener-thickness N  Stiffener thickness (current: {stiffener_thickness}mm)
+  --subdivisions N         Bend quality (current: {subdivisions})
+  --flat                   Export unbent board"""
 
             wx.MessageBox(commands, "STEP Export Commands", wx.OK | wx.ICON_INFORMATION)
             return
