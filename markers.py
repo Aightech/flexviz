@@ -477,6 +477,19 @@ def create_fold_marker(
     else:
         axis = (1.0, 0.0)
 
+    # Normalize axis direction so parallel folds have consistent perp directions.
+    # For mostly horizontal folds: ensure axis points in +X direction
+    # For mostly vertical folds: ensure axis points in +Y direction
+    # This makes perp = (-axis.y, axis.x) consistent across parallel folds.
+    if abs(axis[0]) >= abs(axis[1]):
+        # Mostly horizontal - ensure axis.x is positive
+        if axis[0] < 0:
+            axis = (-axis[0], -axis[1])
+    else:
+        # Mostly vertical - ensure axis.y is positive
+        if axis[1] < 0:
+            axis = (-axis[0], -axis[1])
+
     # Calculate center (midpoint between the two line midpoints)
     mid_a = _line_midpoint(line_a)
     mid_b = _line_midpoint(line_b)
