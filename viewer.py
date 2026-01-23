@@ -19,6 +19,7 @@ try:
     from .config import FlexConfig, FLEX_THICKNESS_PRESETS, STIFFENER_THICKNESS_PRESETS
     from .kicad_parser import KiCadPCB
     from .stiffener import extract_stiffeners
+    from .validation import validate_design, get_fold_radius_status, ValidationResult
 except ImportError:
     from mesh import Mesh, create_board_geometry_mesh
     from bend_transform import FoldDefinition, create_fold_definitions
@@ -27,6 +28,7 @@ except ImportError:
     from config import FlexConfig, FLEX_THICKNESS_PRESETS, STIFFENER_THICKNESS_PRESETS
     from kicad_parser import KiCadPCB
     from stiffener import extract_stiffeners
+    from validation import validate_design, get_fold_radius_status, ValidationResult
 
 
 class GLCanvas(glcanvas.GLCanvas):
@@ -342,6 +344,11 @@ class FoldSlider(wx.Panel):
         # Layout
         sizer = wx.BoxSizer(wx.HORIZONTAL)
 
+        # Status indicator (colored circle)
+        self.status_indicator = wx.StaticText(self, label="●", size=(15, -1))
+        self.status_indicator.SetForegroundColour(wx.Colour(0, 180, 0))  # Default green
+        sizer.Add(self.status_indicator, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 3)
+
         # Label
         self.label = wx.StaticText(self, label=f"Fold {fold_index + 1}:")
         sizer.Add(self.label, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
@@ -378,6 +385,18 @@ class FoldSlider(wx.Panel):
     def set_angle(self, angle: float):
         """Set angle in degrees."""
         self.spin.SetValue(angle)
+
+    def set_status(self, status: str, tooltip: str = ""):
+        """Set the status indicator color: 'green', 'yellow', or 'red'."""
+        colors = {
+            "green": wx.Colour(0, 180, 0),
+            "yellow": wx.Colour(220, 180, 0),
+            "red": wx.Colour(220, 50, 50),
+        }
+        self.status_indicator.SetForegroundColour(colors.get(status, colors["green"]))
+        if tooltip:
+            self.status_indicator.SetToolTip(tooltip)
+        self.Refresh()
 
 
 class FlexViewerFrame(wx.Frame):
@@ -587,6 +606,25 @@ class FlexViewerFrame(wx.Frame):
 
         right_column.Add(stiffener_sizer, 0, wx.EXPAND | wx.ALL, 5)
 
+        # Validation Panel
+        validation_box = wx.StaticBox(control_panel, label="Validation")
+        validation_sizer = wx.StaticBoxSizer(validation_box, wx.VERTICAL)
+
+        self.validation_text = wx.StaticText(control_panel, label="No issues detected")
+        self.validation_text.SetForegroundColour(wx.Colour(0, 128, 0))
+        validation_sizer.Add(self.validation_text, 0, wx.ALL, 5)
+
+        # Validation details (hidden by default, shown when there are issues)
+        self.validation_details = wx.TextCtrl(
+            control_panel,
+            style=wx.TE_MULTILINE | wx.TE_READONLY | wx.TE_NO_VSCROLL,
+            size=(-1, 60)
+        )
+        self.validation_details.Hide()
+        validation_sizer.Add(self.validation_details, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
+
+        right_column.Add(validation_sizer, 0, wx.EXPAND | wx.ALL, 5)
+
         # Buttons
         btn_sizer = wx.BoxSizer(wx.HORIZONTAL)
 
@@ -706,6 +744,9 @@ class FlexViewerFrame(wx.Frame):
 
         self.canvas.set_mesh(mesh)
 
+        # Run validation
+        self.run_validation(stiffeners)
+
     def on_fold_angle_changed(self, fold_index: int, angle: float):
         """Handle fold angle slider change."""
         if fold_index < len(self.folds):
@@ -714,6 +755,76 @@ class FlexViewerFrame(wx.Frame):
         if fold_index < len(self.fold_markers):
             self.fold_markers[fold_index].angle_degrees = angle
         self.update_mesh()
+
+    def run_validation(self, stiffeners: list = None):
+        """Run validation checks and update UI."""
+        if not hasattr(self, 'validation_text'):
+            return
+
+        # Get stiffeners if not provided
+        if stiffeners is None and self.pcb and self.config.has_stiffener:
+            stiffeners = extract_stiffeners(self.pcb, self.config)
+
+        stiffeners = stiffeners or []
+
+        # Run validation
+        result = validate_design(
+            self.fold_markers,
+            self.board_geometry,
+            stiffeners,
+            self.config
+        )
+
+        # Update fold slider status indicators
+        for i, slider in enumerate(self.fold_sliders):
+            if i < len(self.fold_markers):
+                status = get_fold_radius_status(self.fold_markers[i], self.config)
+
+                # Check if this fold has stiffener conflicts
+                fold_errors = [w for w in result.get_by_category("stiffener")
+                              if w.details.get("fold_index") == i]
+                if fold_errors:
+                    status = "red"
+                    tooltip = fold_errors[0].message
+                else:
+                    # Get radius warning if any
+                    radius_warnings = [w for w in result.get_by_category("bend_radius")
+                                      if w.details.get("fold_index") == i]
+                    if radius_warnings:
+                        tooltip = radius_warnings[0].message
+                    else:
+                        tooltip = f"Radius: {self.fold_markers[i].radius:.2f}mm"
+
+                slider.set_status(status, tooltip)
+
+        # Update validation panel
+        if result.has_errors or result.has_warnings:
+            error_count = result.error_count
+            warning_count = result.warning_count
+
+            if error_count > 0:
+                self.validation_text.SetLabel(f"⚠ {error_count} error(s), {warning_count} warning(s)")
+                self.validation_text.SetForegroundColour(wx.Colour(220, 50, 50))
+            else:
+                self.validation_text.SetLabel(f"⚠ {warning_count} warning(s)")
+                self.validation_text.SetForegroundColour(wx.Colour(220, 150, 0))
+
+            # Show details
+            details = []
+            for w in result.warnings:
+                if w.severity != "info":
+                    prefix = "❌" if w.severity == "error" else "⚠"
+                    details.append(f"{prefix} {w.message}")
+
+            self.validation_details.SetValue("\n".join(details[:5]))  # Show max 5
+            self.validation_details.Show()
+        else:
+            self.validation_text.SetLabel("✓ No issues detected")
+            self.validation_text.SetForegroundColour(wx.Colour(0, 128, 0))
+            self.validation_details.Hide()
+
+        # Force layout update
+        self.validation_text.GetParent().Layout()
 
     def on_wireframe_toggle(self, event):
         """Handle wireframe toggle."""
