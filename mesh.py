@@ -1003,7 +1003,7 @@ def create_pad_mesh(
 
     Args:
         pad: Pad geometry
-        z_offset: Z offset for the pad
+        z_offset: Z offset for the pad (along surface normal)
         regions: List of Region objects for region-based transformation
 
     Returns:
@@ -1023,11 +1023,16 @@ def create_pad_mesh(
         if containing_region:
             region_recipe = get_region_recipe(containing_region)
 
-    # Transform vertices using recipe-based function
+    # Transform vertices and offset along surface normal
     vertices_3d = []
     for v in poly.vertices:
-        v3d = transform_point(v, region_recipe)
-        vertices_3d.append((v3d[0], v3d[1], v3d[2] + z_offset))
+        v3d, normal = transform_point_and_normal(v, region_recipe)
+        # Offset along normal direction, not global Z
+        vertices_3d.append((
+            v3d[0] + normal[0] * z_offset,
+            v3d[1] + normal[1] * z_offset,
+            v3d[2] + normal[2] * z_offset
+        ))
 
     # Add vertices
     indices = [mesh.add_vertex(v) for v in vertices_3d]
@@ -1050,7 +1055,7 @@ def create_component_mesh(
 
     Args:
         component: Component geometry
-        height: Component height
+        height: Component height (along surface normal)
         regions: List of Region objects for region-based transformation
 
     Returns:
@@ -1070,15 +1075,19 @@ def create_component_mesh(
         if containing_region:
             region_recipe = get_region_recipe(containing_region)
 
-    # Transform bottom vertices using recipe-based function
+    # Transform bottom vertices and get normals
     bottom_3d = []
+    normals = []
     for v in box.vertices:
-        v3d = transform_point(v, region_recipe)
+        v3d, normal = transform_point_and_normal(v, region_recipe)
         bottom_3d.append(v3d)
+        normals.append(normal)
 
-    # Create top vertices (offset by height in local up direction)
-    # Simplified: just offset in global Z
-    top_3d = [(v[0], v[1], v[2] + height) for v in bottom_3d]
+    # Create top vertices offset along surface normal
+    top_3d = [
+        (v[0] + n[0] * height, v[1] + n[1] * height, v[2] + n[2] * height)
+        for v, n in zip(bottom_3d, normals)
+    ]
 
     # Add vertices
     n = len(bottom_3d)
