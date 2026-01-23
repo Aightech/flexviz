@@ -238,8 +238,11 @@ def transform_point(
             excess = perp_dist - hw
 
             # Rotate the excess in the rotated perp-up plane
+            # For back entry, negate sin_a because the flat surface continues
+            # in the opposite rotation direction (toward BEFORE, not AFTER)
+            effective_sin_a = -sin_a if entered_from_back else sin_a
             local_perp = zone_end_perp + excess * cos_a
-            local_up = zone_end_up + excess * sin_a
+            local_up = zone_end_up + excess * effective_sin_a
 
             # Final 3D position
             pos_3d = (
@@ -256,7 +259,7 @@ def transform_point(
             # New origin: The cylindrical offset means fold center also moves.
             # Compute where fold center (perp_dist=0) ends up:
             center_local_perp = zone_end_perp + (0 - hw) * cos_a
-            center_local_up = zone_end_up + (0 - hw) * sin_a
+            center_local_up = zone_end_up + (0 - hw) * effective_sin_a
             fold_center_transformed = (
                 fold_center_3d[0] + center_local_perp * fold_perp_3d[0] + center_local_up * up_3d[0],
                 fold_center_3d[1] + center_local_perp * fold_perp_3d[1] + center_local_up * up_3d[1],
