@@ -437,17 +437,17 @@ Each phase builds on the previous. Complete all unit tests before moving to the 
 
 ---
 
-## Phase 8: Visual Enhancements
+## Phase 8: Visual Enhancements 🔄
 
-### 8.1 Via/Drill Hole Visualization
+### 8.1 Drill Hole Visualization
 
-- [ ] Extract via positions from KiCad PCB
-- [ ] Extract via drill diameter and pad size
-- [ ] Render vias as cylindrical holes through board
-- [ ] Support blind/buried vias (partial depth)
-- [ ] Add "Show Vias" checkbox to display options
+- [x] Extract drill holes from through-hole pads
+- [x] Extract mounting holes (np_thru_hole)
+- [x] Render drill holes as board cutouts
+- [x] Support both plated and non-plated holes
+- [ ] Optional: Render as cylindrical holes with walls (cosmetic)
 
-### 8.2 Silkscreen Layer Display
+### 8.2 Silkscreen Layer Display (Deferred)
 
 - [ ] Extract silkscreen graphics (F.SilkS, B.SilkS layers)
 - [ ] Render text as extruded geometry or textured quads
@@ -455,7 +455,7 @@ Each phase builds on the previous. Complete all unit tests before moving to the 
 - [ ] Apply white color with slight offset above pads
 - [ ] Add "Show Silkscreen" checkbox to display options
 
-### 8.3 Copper Zone Fills (Pours)
+### 8.3 Copper Zone Fills (Deferred)
 
 - [ ] Extract zone fill polygons from KiCad PCB
 - [ ] Handle zone with thermal reliefs (complex geometry)
@@ -465,19 +465,21 @@ Each phase builds on the previous. Complete all unit tests before moving to the 
 
 ### 8.4 3D Component Models from KiCad
 
-- [ ] Read 3D model paths from footprint definitions
-- [ ] Support STEP file loading (via OCC or trimesh)
-- [ ] Support WRL file loading (VRML)
-- [ ] Apply component position, rotation, and offset
-- [ ] Scale models correctly (KiCad uses mm)
-- [ ] Handle missing model files gracefully
+- [x] Read 3D model paths from footprint definitions
+- [x] Parse model offset, scale, rotate, hide attributes
+- [x] Resolve KiCad environment variables (KICAD9_3DMODEL_DIR, etc.)
+- [x] Resolve relative paths from PCB directory
+- [x] Model3DGeometry dataclass in geometry.py
+- [x] model_loader.py with path resolution and transform utilities
+- [ ] STEP file loading (requires trimesh with cascadio or OCC)
+- [ ] WRL file loading (requires trimesh)
+- [ ] Integrate loaded models into mesh generation
 - [ ] Add "Show 3D Models" checkbox (default: placeholder boxes)
 
 **Unit Tests:**
-- [ ] Test via extraction from KiCad PCB
-- [ ] Test silkscreen graphics extraction
-- [ ] Test zone polygon extraction
+- [ ] Test drill hole extraction
 - [ ] Test 3D model path resolution
+- [ ] Test model transform application
 
 ---
 
@@ -580,6 +582,17 @@ Each phase builds on the previous. Complete all unit tests before moving to the 
 ---
 
 ## Recent Updates
+
+**2026-01-23**: Phase 8 - Visual Enhancements (partial)
+- **Drill holes as cutouts**: `DrillHole` dataclass, `get_drill_holes()` method extracts from thru_hole/np_thru_hole pads
+- Drill holes automatically rendered as board cutouts (through the PCB)
+- **3D Model infrastructure**:
+  - `Model3D` dataclass with offset/scale/rotate/hide
+  - Full model parsing in `get_footprints()` (all models, not just first)
+  - `model_loader.py` with KiCad environment variable expansion
+  - Path resolution for `${KICAD9_3DMODEL_DIR}`, relative paths, etc.
+  - Transform utilities for component positioning
+  - Trimesh-based loading ready (needs `pip install trimesh`)
 
 **2026-01-23**: Phase 7 - Validation & Warnings
 - New `validation.py` module with design rule checks
