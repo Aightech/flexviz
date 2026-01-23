@@ -557,19 +557,25 @@ def parse_wrl_native(path: str) -> Optional[LoadedModel]:
 
         # Pair point arrays with coordIndex arrays by position
         # Each IndexedFaceSet has one coord and one coordIndex
-        # We pair them by finding the closest coordIndex after each coord
+        # They can appear in either order, so find the closest match
         pairs = []
+        used_indices = set()
+
         for pm in point_matches:
-            # Find the nearest coordIndex after this point array
+            # Find the nearest coordIndex (before or after) this point array
             best_im = None
             best_dist = float('inf')
             for im in index_matches:
-                dist = im.start() - pm.end()
-                if dist > 0 and dist < best_dist:
+                if im.start() in used_indices:
+                    continue
+                # Distance can be negative (index before point) or positive (index after)
+                dist = abs(im.start() - pm.end())
+                if dist < best_dist:
                     best_dist = dist
                     best_im = im
             if best_im:
                 pairs.append((pm.group(1), best_im.group(1)))
+                used_indices.add(best_im.start())
 
         if not pairs:
             return None

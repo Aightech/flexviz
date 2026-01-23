@@ -1483,7 +1483,10 @@ def create_component_3d_model_mesh(
         # Get surface normal at component center (after bend)
         _, surface_normal = transform_point_and_normal(component.center, region_recipe)
 
-        for v in loaded.mesh.vertices:
+        # Track vertex index mapping (old index -> new index)
+        vertex_map = {}
+
+        for old_idx, v in enumerate(loaded.mesh.vertices):
             x, y, z = v
 
             # 1. Scale
@@ -1521,21 +1524,24 @@ def create_component_3d_model_mesh(
             final_y = base_3d[1] + normal[1] * z
             final_z = base_3d[2] + normal[2] * z
 
-            mesh.add_vertex((final_x, final_y, final_z))
+            new_idx = mesh.add_vertex((final_x, final_y, final_z))
+            vertex_map[old_idx] = new_idx
 
-        # Copy faces with proper winding
+        # Copy faces with proper winding, using mapped indices
         for i, face in enumerate(loaded.mesh.faces):
             color = loaded.mesh.colors[i] if i < len(loaded.mesh.colors) else COLOR_MODEL_3D
-            if len(face) == 3:
+            # Map old indices to new indices
+            mapped_face = [vertex_map[idx] for idx in face]
+            if len(mapped_face) == 3:
                 if is_back_layer:
-                    mesh.add_triangle(face[0], face[2], face[1], color)
+                    mesh.add_triangle(mapped_face[0], mapped_face[2], mapped_face[1], color)
                 else:
-                    mesh.add_triangle(face[0], face[1], face[2], color)
-            elif len(face) == 4:
+                    mesh.add_triangle(mapped_face[0], mapped_face[1], mapped_face[2], color)
+            elif len(mapped_face) == 4:
                 if is_back_layer:
-                    mesh.add_quad(face[0], face[3], face[2], face[1], color)
+                    mesh.add_quad(mapped_face[0], mapped_face[3], mapped_face[2], mapped_face[1], color)
                 else:
-                    mesh.add_quad(face[0], face[1], face[2], face[3], color)
+                    mesh.add_quad(mapped_face[0], mapped_face[1], mapped_face[2], mapped_face[3], color)
 
         # Return after first successful model load
         return mesh
