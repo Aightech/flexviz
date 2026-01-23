@@ -1403,7 +1403,8 @@ def create_component_3d_model_mesh(
     component: ComponentGeometry,
     pcb_dir: str,
     pcb_thickness: float,
-    regions: list[Region] = None
+    regions: list[Region] = None,
+    pcb=None
 ) -> Mesh:
     """
     Create a 3D mesh for a component from its 3D model file.
@@ -1413,6 +1414,7 @@ def create_component_3d_model_mesh(
         pcb_dir: Directory of PCB file for path resolution
         pcb_thickness: PCB thickness for back layer positioning
         regions: List of Region objects for region-based transformation
+        pcb: KiCadPCB object for extracting embedded models
 
     Returns:
         Transformed mesh or empty mesh if no model loaded
@@ -1437,8 +1439,8 @@ def create_component_3d_model_mesh(
         if model_ref.hide:
             continue
 
-        # Resolve path
-        resolved_path = expand_kicad_vars(model_ref.path, pcb_dir)
+        # Resolve path (supports ${VAR}, relative paths, and kicad-embed://)
+        resolved_path = expand_kicad_vars(model_ref.path, pcb_dir, pcb)
         if not resolved_path:
             continue
 
@@ -1554,7 +1556,8 @@ def create_board_geometry_mesh(
     debug_regions: bool = False,
     apply_bend: bool = True,
     include_3d_models: bool = False,
-    pcb_dir: str = None
+    pcb_dir: str = None,
+    pcb=None
 ) -> Mesh:
     """
     Create a complete 3D mesh from board geometry.
@@ -1573,6 +1576,7 @@ def create_board_geometry_mesh(
         apply_bend: If False, show flat board with regions but no bending
         include_3d_models: Include 3D models from footprints
         pcb_dir: PCB directory for resolving model paths
+        pcb: KiCadPCB object for extracting embedded models
 
     Returns:
         Complete mesh
@@ -1634,7 +1638,7 @@ def create_board_geometry_mesh(
         loaded_count = 0
         for comp in board.components:
             model_mesh = create_component_3d_model_mesh(
-                comp, pcb_dir, board.thickness, active_regions
+                comp, pcb_dir, board.thickness, active_regions, pcb
             )
             if model_mesh.vertices:
                 mesh.merge(model_mesh)

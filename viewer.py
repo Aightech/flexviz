@@ -753,7 +753,8 @@ class FlexViewerFrame(wx.Frame):
             debug_regions=self.cb_debug_regions.GetValue() if hasattr(self, 'cb_debug_regions') else False,
             apply_bend=bend_enabled,
             include_3d_models=include_3d_models,
-            pcb_dir=pcb_dir
+            pcb_dir=pcb_dir,
+            pcb=self.pcb
         )
 
         self.canvas.set_mesh(mesh)

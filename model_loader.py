@@ -83,6 +83,127 @@ class LoadedModel:
 
 
 # KiCad environment variables and their typical paths
+import base64
+import tempfile
+
+# Try to import zstd for embedded file decompression
+_zstd_available = False
+try:
+    import zstandard as zstd
+    _zstd_available = True
+except ImportError:
+    try:
+        import zstd
+        _zstd_available = True
+    except ImportError:
+        pass
+
+# Cache for extracted embedded models (avoid re-extracting)
+_embedded_model_cache = {}
+
+
+def extract_embedded_model(embed_url: str, pcb, pcb_dir: str = None) -> Optional[str]:
+    """
+    Extract an embedded model from a PCB file.
+
+    KiCad 8+ supports embedding 3D models directly in the PCB file.
+    These are referenced with kicad-embed://filename URLs.
+
+    Note: KiCad compresses embedded files with zstd. If zstd/zstandard
+    is not installed, compressed embedded models cannot be extracted.
+
+    Args:
+        embed_url: URL like "kicad-embed://model.step"
+        pcb: KiCadPCB object containing the embedded files
+        pcb_dir: Directory for caching extracted files
+
+    Returns:
+        Path to extracted model file, or None if extraction fails
+    """
+    if not pcb:
+        return None
+
+    # Parse the URL to get the filename
+    # Format: kicad-embed://filename.ext
+    if not embed_url.startswith("kicad-embed://"):
+        return None
+
+    model_name = embed_url[len("kicad-embed://"):]
+
+    # Check cache first
+    cache_key = (id(pcb), model_name)
+    if cache_key in _embedded_model_cache:
+        cached_path = _embedded_model_cache[cache_key]
+        if os.path.exists(cached_path):
+            return cached_path
+
+    # Find the embedded file in the PCB
+    try:
+        root = pcb.root
+        for child in root.children:
+            if hasattr(child, 'name') and child.name == 'embedded_files':
+                for file_entry in child.children:
+                    if not hasattr(file_entry, 'name') or file_entry.name != 'file':
+                        continue
+
+                    # Parse file entry
+                    file_name = None
+                    file_data = None
+
+                    for item in file_entry.children:
+                        if hasattr(item, 'name'):
+                            if item.name == 'name' and item.children:
+                                file_name = item.children[0]
+                            elif item.name == 'data' and item.children:
+                                file_data = item.children[0]
+
+                    if file_name == model_name and file_data:
+                        # KiCad embedded files are base64-encoded and often zstd-compressed
+                        # Compressed data starts with '|' prefix
+                        try:
+                            is_compressed = file_data.startswith('|')
+                            if is_compressed:
+                                if not _zstd_available:
+                                    print(f"Cannot extract embedded model {model_name}: "
+                                          "zstd compression but no zstd library. "
+                                          "Install with: pip install zstandard")
+                                    return None
+                                # Remove '|' prefix and decode
+                                raw_data = base64.b64decode(file_data[1:])
+                                # Decompress
+                                if hasattr(zstd, 'decompress'):
+                                    model_bytes = zstd.decompress(raw_data)
+                                else:
+                                    dctx = zstd.ZstdDecompressor()
+                                    model_bytes = dctx.decompress(raw_data)
+                            else:
+                                model_bytes = base64.b64decode(file_data)
+                        except Exception as e:
+                            print(f"Failed to decode embedded model {model_name}: {e}")
+                            continue
+
+                        # Write to temp file (or cache dir)
+                        ext = os.path.splitext(model_name)[1].lower()
+                        if pcb_dir:
+                            cache_dir = os.path.join(pcb_dir, '.kicad_embed_cache')
+                            os.makedirs(cache_dir, exist_ok=True)
+                            output_path = os.path.join(cache_dir, model_name)
+                        else:
+                            fd, output_path = tempfile.mkstemp(suffix=ext)
+                            os.close(fd)
+
+                        with open(output_path, 'wb') as f:
+                            f.write(model_bytes)
+
+                        _embedded_model_cache[cache_key] = output_path
+                        return output_path
+
+    except Exception as e:
+        print(f"Failed to extract embedded model {model_name}: {e}")
+
+    return None
+
+
 KICAD_ENV_VARS = {
     "KICAD9_3DMODEL_DIR": [
         "/usr/share/kicad/3dmodels",
@@ -110,17 +231,22 @@ KICAD_ENV_VARS = {
 }
 
 
-def expand_kicad_vars(path: str, pcb_dir: str = None) -> Optional[str]:
+def expand_kicad_vars(path: str, pcb_dir: str = None, pcb=None) -> Optional[str]:
     """
     Expand KiCad environment variables in a model path.
 
     Args:
         path: Model path potentially containing ${VAR} syntax
         pcb_dir: Directory of the PCB file for relative path resolution
+        pcb: KiCadPCB object for extracting embedded models
 
     Returns:
         Resolved absolute path, or None if not found
     """
+    # Handle kicad-embed:// URLs (models embedded in PCB file)
+    if path.startswith("kicad-embed://"):
+        return extract_embedded_model(path, pcb, pcb_dir)
+
     # Handle relative paths
     if path.startswith("../") or path.startswith("./"):
         if pcb_dir:
