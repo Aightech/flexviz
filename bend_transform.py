@@ -221,8 +221,11 @@ def transform_point(
             # then rotate the excess distance beyond the zone.
             # This ensures continuity with IN_ZONE at the boundary.
 
-            cos_a = math.cos(effective_angle)
-            sin_a = math.sin(effective_angle)
+            # For back entry, use -angle for rotation direction
+            # (point is geometrically BEFORE fold, on the un-rotated side)
+            rotation_angle = -effective_angle if entered_from_back else effective_angle
+            cos_a = math.cos(rotation_angle)
+            sin_a = math.sin(rotation_angle)
 
             # Position at end of IN_ZONE (perp_dist = hw)
             zone_end_perp = R * math.sin(abs(effective_angle)) - hw
@@ -238,11 +241,8 @@ def transform_point(
             excess = perp_dist - hw
 
             # Rotate the excess in the rotated perp-up plane
-            # For back entry, negate sin_a because the flat surface continues
-            # in the opposite rotation direction (toward BEFORE, not AFTER)
-            effective_sin_a = -sin_a if entered_from_back else sin_a
             local_perp = zone_end_perp + excess * cos_a
-            local_up = zone_end_up + excess * effective_sin_a
+            local_up = zone_end_up + excess * sin_a
 
             # Final 3D position
             pos_3d = (
@@ -253,13 +253,14 @@ def transform_point(
 
             # Update cumulative affine transformation for subsequent folds
             # New rotation: fold_rot @ rot
-            fold_rot = _rotation_matrix_around_axis(fold_axis_3d, effective_angle)
+            # For back entry, use -angle (consistent with compute_normal)
+            fold_rot = _rotation_matrix_around_axis(fold_axis_3d, rotation_angle)
             new_rot = _multiply_matrices(fold_rot, rot)
 
             # New origin: The cylindrical offset means fold center also moves.
             # Compute where fold center (perp_dist=0) ends up:
             center_local_perp = zone_end_perp + (0 - hw) * cos_a
-            center_local_up = zone_end_up + (0 - hw) * effective_sin_a
+            center_local_up = zone_end_up + (0 - hw) * sin_a
             fold_center_transformed = (
                 fold_center_3d[0] + center_local_perp * fold_perp_3d[0] + center_local_up * up_3d[0],
                 fold_center_3d[1] + center_local_perp * fold_perp_3d[1] + center_local_up * up_3d[1],
