@@ -1144,14 +1144,23 @@ def create_stiffener_mesh(
 
     mesh = Mesh()
 
-    # Find which region the stiffener center is in
-    cx = sum(v[0] for v in outline) / len(outline)
-    cy = sum(v[1] for v in outline) / len(outline)
-    stiffener_center = (cx, cy)
+    # Find which region the stiffener is in
+    # Try centroid first, then outline vertices if centroid is in a hole
     region_recipe = []
 
     if regions:
-        containing_region = find_containing_region(stiffener_center, regions)
+        # Try centroid first
+        cx = sum(v[0] for v in outline) / len(outline)
+        cy = sum(v[1] for v in outline) / len(outline)
+        containing_region = find_containing_region((cx, cy), regions)
+
+        # If centroid is in a hole (board cutout), try outline vertices
+        if not containing_region:
+            for v in outline:
+                containing_region = find_containing_region(v, regions)
+                if containing_region:
+                    break
+
         if containing_region:
             region_recipe = get_region_recipe(containing_region)
 
