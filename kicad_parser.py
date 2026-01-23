@@ -256,6 +256,25 @@ class Pad:
 
 
 @dataclass
+class Model3D:
+    """A 3D model reference for a component."""
+    path: str
+    offset: tuple[float, float, float] = (0, 0, 0)
+    scale: tuple[float, float, float] = (1, 1, 1)
+    rotate: tuple[float, float, float] = (0, 0, 0)
+    hide: bool = False
+
+
+@dataclass
+class DrillHole:
+    """A drill hole (through-hole pad or mounting hole)."""
+    center_x: float
+    center_y: float
+    diameter: float
+    plated: bool = True  # True for thru_hole pads, False for np_thru_hole
+
+
+@dataclass
 class Footprint:
     """A component footprint."""
     library: str
@@ -268,6 +287,7 @@ class Footprint:
     value: str = ""
     pads: list = field(default_factory=list)
     model_path: str = ""
+    models: list = field(default_factory=list)  # List of Model3D
 
 
 class KiCadPCB:
@@ -828,11 +848,49 @@ class KiCadPCB:
                 ref_expr = fp['fp_text']
                 # Would need to iterate to find 'reference' type
 
-            # Get 3D model path
+            # Get 3D models
             model_path = ""
-            model = fp['model']
-            if model:
-                model_path = model.get_string(0)
+            models = []
+            for model in fp.find_all('model'):
+                m_path = model.get_string(0)
+                if not model_path:
+                    model_path = m_path  # Keep first for backwards compat
+
+                # Parse offset, scale, rotate
+                m_offset = (0.0, 0.0, 0.0)
+                m_scale = (1.0, 1.0, 1.0)
+                m_rotate = (0.0, 0.0, 0.0)
+                m_hide = False
+
+                offset_expr = model['offset']
+                if offset_expr:
+                    xyz = offset_expr['xyz']
+                    if xyz:
+                        m_offset = (xyz.get_float(0), xyz.get_float(1), xyz.get_float(2))
+
+                scale_expr = model['scale']
+                if scale_expr:
+                    xyz = scale_expr['xyz']
+                    if xyz:
+                        m_scale = (xyz.get_float(0), xyz.get_float(1), xyz.get_float(2))
+
+                rotate_expr = model['rotate']
+                if rotate_expr:
+                    xyz = rotate_expr['xyz']
+                    if xyz:
+                        m_rotate = (xyz.get_float(0), xyz.get_float(1), xyz.get_float(2))
+
+                hide_expr = model['hide']
+                if hide_expr and hide_expr.get_string(0) == 'yes':
+                    m_hide = True
+
+                models.append(Model3D(
+                    path=m_path,
+                    offset=m_offset,
+                    scale=m_scale,
+                    rotate=m_rotate,
+                    hide=m_hide
+                ))
 
             # Get pads
             pads = []
@@ -887,10 +945,50 @@ class KiCadPCB:
                 reference=reference,
                 value=value,
                 pads=pads,
-                model_path=model_path
+                model_path=model_path,
+                models=models
             ))
 
         return self._footprints
+
+    def get_drill_holes(self) -> list[DrillHole]:
+        """
+        Get all drill holes from through-hole pads and mounting holes.
+
+        Returns absolute positions (footprint position + pad offset with rotation).
+        """
+        import math
+
+        holes = []
+        footprints = self.get_footprints()
+
+        for fp in footprints:
+            fp_angle_rad = math.radians(fp.at_angle)
+            cos_a = math.cos(fp_angle_rad)
+            sin_a = math.sin(fp_angle_rad)
+
+            for pad in fp.pads:
+                if pad.drill > 0:
+                    # Rotate pad offset by footprint angle
+                    # KiCad uses clockwise rotation for positive angles
+                    rotated_x = pad.at_x * cos_a - pad.at_y * sin_a
+                    rotated_y = pad.at_x * sin_a + pad.at_y * cos_a
+
+                    # Add to footprint position
+                    abs_x = fp.at_x + rotated_x
+                    abs_y = fp.at_y + rotated_y
+
+                    # Determine if plated
+                    plated = pad.pad_type != 'np_thru_hole'
+
+                    holes.append(DrillHole(
+                        center_x=abs_x,
+                        center_y=abs_y,
+                        diameter=pad.drill,
+                        plated=plated
+                    ))
+
+        return holes
 
     def get_available_layers(self) -> list[str]:
         """

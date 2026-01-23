@@ -162,6 +162,16 @@ class PadGeometry:
 
 
 @dataclass
+class Model3DGeometry:
+    """3D model reference for a component."""
+    path: str
+    offset: tuple[float, float, float] = (0, 0, 0)
+    scale: tuple[float, float, float] = (1, 1, 1)
+    rotate: tuple[float, float, float] = (0, 0, 0)
+    hide: bool = False
+
+
+@dataclass
 class ComponentGeometry:
     """Geometry for a component (footprint)."""
     reference: str
@@ -172,6 +182,7 @@ class ComponentGeometry:
     pads: list[PadGeometry]
     layer: str
     model_path: str = ""
+    models: list[Model3DGeometry] = field(default_factory=list)
 
 
 @dataclass
@@ -300,6 +311,18 @@ def extract_geometry(pcb: KiCadPCB) -> BoardGeometry:
                 layer=pad_layer
             ))
 
+        # Convert 3D models
+        models = [
+            Model3DGeometry(
+                path=m.path,
+                offset=m.offset,
+                scale=m.scale,
+                rotate=m.rotate,
+                hide=m.hide
+            )
+            for m in fp.models
+        ]
+
         components.append(ComponentGeometry(
             reference=fp.reference,
             value=fp.value,
@@ -308,7 +331,8 @@ def extract_geometry(pcb: KiCadPCB) -> BoardGeometry:
             bounding_box=bbox,
             pads=pads,
             layer=fp.layer,
-            model_path=fp.model_path
+            model_path=fp.model_path,
+            models=models
         ))
 
     # Get cutouts from Edge.Cuts
@@ -326,6 +350,15 @@ def extract_geometry(pcb: KiCadPCB) -> BoardGeometry:
     # Polygon cutouts (closed polygons from gr_line/gr_arc that aren't the outline)
     for poly_verts in pcb.get_polygon_cutouts():
         cutouts.append(Polygon(poly_verts))
+
+    # Drill holes as cutouts (through-hole pads and mounting holes)
+    for hole in pcb.get_drill_holes():
+        hole_poly = circle_to_polygon(
+            hole.center_x,
+            hole.center_y,
+            hole.diameter / 2  # radius = diameter / 2
+        )
+        cutouts.append(hole_poly)
 
     return BoardGeometry(
         outline=outline,
