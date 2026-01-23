@@ -945,15 +945,6 @@ def create_trace_mesh(
     if len(ribbon.vertices) != 4:
         return mesh
 
-    # Find which region the trace midpoint is in
-    trace_mid = ((segment.start[0] + segment.end[0]) / 2, (segment.start[1] + segment.end[1]) / 2)
-    region_recipe = []
-
-    if regions:
-        containing_region = find_containing_region(trace_mid, regions)
-        if containing_region:
-            region_recipe = get_region_recipe(containing_region)
-
     # Determine if trace is on back layer
     is_back_layer = segment.layer == "B.Cu"
 
@@ -972,9 +963,20 @@ def create_trace_mesh(
         p1 = (v0[0] + t * (v1[0] - v0[0]), v0[1] + t * (v1[1] - v0[1]))
         p2 = (v3[0] + t * (v2[0] - v3[0]), v3[1] + t * (v2[1] - v3[1]))
 
+        # Find region for each point individually (handles traces crossing fold zones)
+        region_recipe_1 = []
+        region_recipe_2 = []
+        if regions:
+            containing_region_1 = find_containing_region(p1, regions)
+            if containing_region_1:
+                region_recipe_1 = get_region_recipe(containing_region_1)
+            containing_region_2 = find_containing_region(p2, regions)
+            if containing_region_2:
+                region_recipe_2 = get_region_recipe(containing_region_2)
+
         # Transform to 3D with normal for proper offset
-        p1_3d, n1 = transform_point_and_normal(p1, region_recipe)
-        p2_3d, n2 = transform_point_and_normal(p2, region_recipe)
+        p1_3d, n1 = transform_point_and_normal(p1, region_recipe_1)
+        p2_3d, n2 = transform_point_and_normal(p2, region_recipe_2)
 
         if is_back_layer:
             # Back layer: offset from bottom surface (negative normal direction)
