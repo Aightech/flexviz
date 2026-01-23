@@ -200,9 +200,11 @@ def transform_point(
         # - Fold axis is at the opposite boundary (perp_dist = +hw instead of -hw)
         # - Distance into zone is measured from the opposite side
         # The angle sign is preserved (bend direction is consistent with fold angle)
+        effective_angle = fold.angle
         if entered_from_back:
             perp_dist = -perp_dist
-        effective_angle = fold.angle
+            effective_angle = effective_angle
+
 
         # Transform fold's local coordinate frame through cumulative rotation
         fold_axis_3d = _apply_rotation(rot, (fold.axis[0], fold.axis[1], 0.0))
@@ -223,7 +225,7 @@ def transform_point(
 
             # For back entry, use -angle for rotation direction
             # (point is geometrically BEFORE fold, on the un-rotated side)
-            rotation_angle = -effective_angle if entered_from_back else effective_angle
+            rotation_angle = -effective_angle+math.pi   if entered_from_back else effective_angle
             cos_a = math.cos(rotation_angle)
             sin_a = math.sin(rotation_angle)
 
