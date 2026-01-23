@@ -1119,7 +1119,8 @@ def create_stiffener_mesh(
     stiffener_thickness: float,
     pcb_thickness: float,
     side: str,
-    regions: list[Region] = None
+    regions: list[Region] = None,
+    cutouts: list[list[tuple[float, float]]] = None
 ) -> Mesh:
     """
     Create a 3D mesh for a stiffener region.
@@ -1133,6 +1134,7 @@ def create_stiffener_mesh(
         pcb_thickness: PCB thickness in mm (to position stiffener)
         side: "top" or "bottom" - which side the stiffener is on
         regions: List of Region objects for region-based transformation
+        cutouts: List of hole polygons within the stiffener
 
     Returns:
         Mesh representing the stiffener
@@ -1194,24 +1196,127 @@ def create_stiffener_mesh(
                 pcb_bottom[2] - normal[2] * stiffener_thickness
             ))
 
-    # Add vertices to mesh
+    # Add vertices to mesh for outer boundary
     n = len(outline)
     top_indices = [mesh.add_vertex(v) for v in stiffener_top]
     bottom_indices = [mesh.add_vertex(v) for v in stiffener_bottom]
 
+    # Build combined 2D vertex list and corresponding mesh indices
+    # for triangulation with holes
+    all_2d = list(outline)
+    all_top_indices = list(top_indices)
+    all_bottom_indices = list(bottom_indices)
+
+    # Process cutouts - transform to 3D and add to mesh
+    if cutouts:
+        for cutout in cutouts:
+            if len(cutout) < 3:
+                continue
+
+            cutout_top_indices = []
+            cutout_bottom_indices = []
+
+            for v in cutout:
+                v3d, normal = transform_point_and_normal(v, region_recipe)
+
+                if side == "top":
+                    ct = (
+                        v3d[0] + normal[0] * stiffener_thickness,
+                        v3d[1] + normal[1] * stiffener_thickness,
+                        v3d[2] + normal[2] * stiffener_thickness
+                    )
+                    cb = v3d  # PCB top surface
+                else:  # bottom
+                    pcb_bottom = (
+                        v3d[0] - normal[0] * pcb_thickness,
+                        v3d[1] - normal[1] * pcb_thickness,
+                        v3d[2] - normal[2] * pcb_thickness
+                    )
+                    ct = pcb_bottom
+                    cb = (
+                        pcb_bottom[0] - normal[0] * stiffener_thickness,
+                        pcb_bottom[1] - normal[1] * stiffener_thickness,
+                        pcb_bottom[2] - normal[2] * stiffener_thickness
+                    )
+
+                ti = mesh.add_vertex(ct)
+                bi = mesh.add_vertex(cb)
+                cutout_top_indices.append(ti)
+                cutout_bottom_indices.append(bi)
+
+            # Add to combined lists for triangulation mapping
+            all_2d.extend(cutout)
+            all_top_indices.extend(cutout_top_indices)
+            all_bottom_indices.extend(cutout_bottom_indices)
+
+            # Create wall faces around the cutout
+            # Winding is reversed for inner walls (facing inward)
+            nc = len(cutout)
+            for i in range(nc):
+                j = (i + 1) % nc
+                mesh.add_quad(
+                    cutout_top_indices[j], cutout_top_indices[i],
+                    cutout_bottom_indices[i], cutout_bottom_indices[j],
+                    COLOR_STIFFENER
+                )
+
     # Triangulate the stiffener top and bottom faces
     outline_2d = [(v[0], v[1]) for v in outline]
-    triangles = triangulate_polygon(outline_2d)
 
-    # Top face
-    for tri in triangles:
-        mesh.add_triangle(top_indices[tri[0]], top_indices[tri[1]], top_indices[tri[2]], COLOR_STIFFENER)
+    if cutouts:
+        # Use triangulation with holes
+        triangles, merged = triangulate_with_holes(outline_2d, cutouts)
 
-    # Bottom face (reversed winding)
-    for tri in triangles:
-        mesh.add_triangle(bottom_indices[tri[0]], bottom_indices[tri[2]], bottom_indices[tri[1]], COLOR_STIFFENER)
+        # Map merged vertices back to mesh indices
+        merged_top = []
+        merged_bottom = []
+        for v2d in merged:
+            found = False
+            for i, av in enumerate(all_2d):
+                if abs(av[0] - v2d[0]) < 0.001 and abs(av[1] - v2d[1]) < 0.001:
+                    merged_top.append(all_top_indices[i])
+                    merged_bottom.append(all_bottom_indices[i])
+                    found = True
+                    break
+            if not found:
+                # This shouldn't happen, but handle gracefully
+                v3d, normal = transform_point_and_normal(v2d, region_recipe)
+                if side == "top":
+                    ct = (v3d[0] + normal[0] * stiffener_thickness,
+                          v3d[1] + normal[1] * stiffener_thickness,
+                          v3d[2] + normal[2] * stiffener_thickness)
+                    cb = v3d
+                else:
+                    pcb_bottom = (v3d[0] - normal[0] * pcb_thickness,
+                                  v3d[1] - normal[1] * pcb_thickness,
+                                  v3d[2] - normal[2] * pcb_thickness)
+                    ct = pcb_bottom
+                    cb = (pcb_bottom[0] - normal[0] * stiffener_thickness,
+                          pcb_bottom[1] - normal[1] * stiffener_thickness,
+                          pcb_bottom[2] - normal[2] * stiffener_thickness)
+                merged_top.append(mesh.add_vertex(ct))
+                merged_bottom.append(mesh.add_vertex(cb))
 
-    # Side faces
+        # Top face
+        for tri in triangles:
+            mesh.add_triangle(merged_top[tri[0]], merged_top[tri[1]], merged_top[tri[2]], COLOR_STIFFENER)
+
+        # Bottom face (reversed winding)
+        for tri in triangles:
+            mesh.add_triangle(merged_bottom[tri[0]], merged_bottom[tri[2]], merged_bottom[tri[1]], COLOR_STIFFENER)
+    else:
+        # No cutouts - simple triangulation
+        triangles = triangulate_polygon(outline_2d)
+
+        # Top face
+        for tri in triangles:
+            mesh.add_triangle(top_indices[tri[0]], top_indices[tri[1]], top_indices[tri[2]], COLOR_STIFFENER)
+
+        # Bottom face (reversed winding)
+        for tri in triangles:
+            mesh.add_triangle(bottom_indices[tri[0]], bottom_indices[tri[2]], bottom_indices[tri[1]], COLOR_STIFFENER)
+
+    # Side faces (outer boundary)
     for i in range(n):
         j = (i + 1) % n
         mesh.add_quad(
@@ -1315,7 +1420,8 @@ def create_board_geometry_mesh(
                 stiffener_thickness=stiffener.thickness,
                 pcb_thickness=board.thickness,
                 side=stiffener.side,
-                regions=regions
+                regions=regions,
+                cutouts=stiffener.cutouts if hasattr(stiffener, 'cutouts') else None
             )
             mesh.merge(stiff_mesh)
 

@@ -28,11 +28,13 @@ class StiffenerRegion:
 
     Attributes:
         outline: Polygon vertices (CCW winding for outer boundary)
+        cutouts: List of hole polygons inside this stiffener (CW winding)
         layer: Source KiCad layer name
         thickness: Stiffener material thickness in mm
         side: Which side of the flex the stiffener is bonded to
     """
     outline: Polygon
+    cutouts: list[Polygon]
     layer: str
     thickness: float
     side: str  # "top" or "bottom"
@@ -86,30 +88,102 @@ class StiffenerRegion:
         return (cx, cy)
 
 
+def _signed_polygon_area(polygon: Polygon) -> float:
+    """
+    Calculate signed area of polygon using shoelace formula.
+
+    Positive area = CCW winding (outer boundary)
+    Negative area = CW winding (hole/cutout)
+    """
+    n = len(polygon)
+    if n < 3:
+        return 0.0
+    area = 0.0
+    for i in range(n):
+        j = (i + 1) % n
+        area += polygon[i][0] * polygon[j][1]
+        area -= polygon[j][0] * polygon[i][1]
+    return area / 2.0
+
+
+def _polygon_centroid(polygon: Polygon) -> Point:
+    """Calculate centroid of a polygon."""
+    n = len(polygon)
+    if n == 0:
+        return (0.0, 0.0)
+    cx = sum(p[0] for p in polygon) / n
+    cy = sum(p[1] for p in polygon) / n
+    return (cx, cy)
+
+
 def extract_stiffeners(pcb: KiCadPCB, config: FlexConfig) -> list[StiffenerRegion]:
     """
     Extract stiffener polygons from the configured layer.
+
+    Detects cutouts (holes) within stiffener regions by analyzing polygon
+    winding order and containment. CCW polygons are outer boundaries,
+    CW polygons are holes assigned to their containing outer boundary.
 
     Args:
         pcb: Parsed KiCad PCB
         config: Flex configuration specifying stiffener layer and thickness
 
     Returns:
-        List of StiffenerRegion objects
+        List of StiffenerRegion objects with associated cutouts
     """
     if not config.has_stiffener:
         return []
 
     polygons = pcb.get_layer_polygon_vertices(config.stiffener_layer)
 
+    if not polygons:
+        return []
+
+    # Separate polygons into outer boundaries and holes based on winding order
+    outer_boundaries = []
+    holes = []
+
+    for poly in polygons:
+        if len(poly) < 3:
+            continue
+        signed_area = _signed_polygon_area(poly)
+        if signed_area > 0:
+            # CCW winding = outer boundary
+            outer_boundaries.append(poly)
+        else:
+            # CW winding = hole (or reverse it to ensure consistency)
+            # Store as-is; KiCad typically exports holes with CW winding
+            holes.append(poly)
+
+    # If no explicit outer boundaries found but we have holes,
+    # the "holes" might actually be outer boundaries with reversed winding
+    # In that case, reverse them
+    if not outer_boundaries and holes:
+        outer_boundaries = [list(reversed(h)) for h in holes]
+        holes = []
+
+    # Associate each hole with its containing outer boundary
+    # Create mapping: outer_index -> list of holes
+    outer_to_holes: dict[int, list[Polygon]] = {i: [] for i in range(len(outer_boundaries))}
+
+    for hole in holes:
+        hole_center = _polygon_centroid(hole)
+        # Find which outer boundary contains this hole
+        for i, outer in enumerate(outer_boundaries):
+            if point_in_polygon(hole_center, outer):
+                outer_to_holes[i].append(hole)
+                break
+
+    # Create StiffenerRegion objects
     return [
         StiffenerRegion(
-            outline=poly,
+            outline=outer,
+            cutouts=outer_to_holes[i],
             layer=config.stiffener_layer,
             thickness=config.stiffener_thickness,
             side=config.stiffener_side
         )
-        for poly in polygons
+        for i, outer in enumerate(outer_boundaries)
     ]
 
 
