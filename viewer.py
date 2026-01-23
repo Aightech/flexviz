@@ -21,6 +21,7 @@ try:
     from .kicad_parser import KiCadPCB
     from .stiffener import extract_stiffeners
     from .validation import validate_design, get_fold_radius_status, ValidationResult
+    from .step_export import is_step_export_available, mesh_to_step
 except ImportError:
     from mesh import Mesh, create_board_geometry_mesh
     from bend_transform import FoldDefinition, create_fold_definitions
@@ -30,6 +31,7 @@ except ImportError:
     from kicad_parser import KiCadPCB
     from stiffener import extract_stiffeners
     from validation import validate_design, get_fold_radius_status, ValidationResult
+    from step_export import is_step_export_available, mesh_to_step
 
 
 class GLCanvas(glcanvas.GLCanvas):
@@ -659,7 +661,7 @@ class FlexViewerFrame(wx.Frame):
 
         right_column.Add(btn_sizer, 0, wx.EXPAND | wx.ALL, 2)
 
-        # Export buttons
+        # Export buttons - row 1
         export_sizer = wx.BoxSizer(wx.HORIZONTAL)
 
         btn_export_obj = wx.Button(control_panel, label="Export OBJ")
@@ -671,6 +673,15 @@ class FlexViewerFrame(wx.Frame):
         export_sizer.Add(btn_export_stl, 1, wx.ALL, 3)
 
         right_column.Add(export_sizer, 0, wx.EXPAND | wx.ALL, 2)
+
+        # Export buttons - row 2 (STEP)
+        export_sizer2 = wx.BoxSizer(wx.HORIZONTAL)
+
+        btn_export_step = wx.Button(control_panel, label="Export STEP")
+        btn_export_step.Bind(wx.EVT_BUTTON, self.on_export_step)
+        export_sizer2.Add(btn_export_step, 1, wx.ALL, 3)
+
+        right_column.Add(export_sizer2, 0, wx.EXPAND | wx.ALL, 2)
 
         # Save settings button
         btn_save_settings = wx.Button(control_panel, label="Save Settings")
@@ -1037,6 +1048,41 @@ class FlexViewerFrame(wx.Frame):
                 path = dialog.GetPath()
                 self.canvas.mesh.to_stl(path)
                 wx.MessageBox(f"Exported to:\n{path}", "Export Complete", wx.OK | wx.ICON_INFORMATION)
+
+    def on_export_step(self, event):
+        """Export to STEP file."""
+        if not is_step_export_available():
+            wx.MessageBox(
+                "STEP export not available.\n\n"
+                "Install build123d with:\n"
+                "pip install build123d",
+                "Export Error",
+                wx.OK | wx.ICON_WARNING
+            )
+            return
+
+        if self.canvas.mesh is None:
+            wx.MessageBox("No mesh to export.", "Export Error", wx.OK | wx.ICON_WARNING)
+            return
+
+        with wx.FileDialog(
+            self,
+            "Export STEP",
+            wildcard="STEP files (*.step;*.stp)|*.step;*.stp",
+            style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT
+        ) as dialog:
+            if dialog.ShowModal() == wx.ID_OK:
+                path = dialog.GetPath()
+                # Show busy cursor during export
+                wx.BeginBusyCursor()
+                try:
+                    success = mesh_to_step(self.canvas.mesh, path)
+                    if success:
+                        wx.MessageBox(f"Exported to:\n{path}", "Export Complete", wx.OK | wx.ICON_INFORMATION)
+                    else:
+                        wx.MessageBox("STEP export failed. Check console for details.", "Export Error", wx.OK | wx.ICON_ERROR)
+                finally:
+                    wx.EndBusyCursor()
 
 
 def show_viewer(
