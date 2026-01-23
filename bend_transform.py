@@ -102,28 +102,16 @@ def transform_point(
         )
 
         if classification == "AFTER":
-            # Point is after this fold - compute position after full bend
+            # Point is after this fold - apply pure rigid rotation around fold axis
+            # All points in an AFTER region rotate by the same angle around the fold line
+            # This ensures the entire region remains planar
 
-            if abs(fold.angle) < 1e-9:
-                arc_end_perp = fold.zone_width
-                arc_end_up = 0.0
-            else:
-                arc_end_perp = R * math.sin(abs(fold.angle))
-                arc_end_up = R * (1 - math.cos(abs(fold.angle)))
-                if fold.angle < 0:
-                    arc_end_up = -arc_end_up
-
-            # Distance beyond the zone (using original 2D perp_dist)
-            dist_from_start = perp_dist + hw
-            beyond = max(0, dist_from_start - fold.zone_width)
-
-            # Direction after bend
             cos_a = math.cos(fold.angle)
             sin_a = math.sin(fold.angle)
 
-            # Local position relative to fold center
-            local_perp = arc_end_perp + beyond * cos_a - hw
-            local_up = arc_end_up + beyond * sin_a
+            # Pure rotation: perp_dist rotates in the perp-up plane
+            local_perp = perp_dist * cos_a
+            local_up = perp_dist * sin_a
 
             # Final 3D position
             pos_3d = (
@@ -137,30 +125,18 @@ def transform_point(
             fold_rot = _rotation_matrix_around_axis(fold_axis_3d, fold.angle)
             new_rot = _multiply_matrices(fold_rot, rot)
 
-            # New origin: compute using zone boundary reference point
-            # We need: rot @ P + origin = correct_3d_position for any point P after the fold
-            # Use zone_end (at perp_dist = hw from fold center) as reference
-            zone_end_2d = (
-                fold.center[0] + hw * fold.perp[0],
-                fold.center[1] + hw * fold.perp[1]
+            # New origin: use fold center as reference point (it's on the rotation axis, so stays put)
+            # We need: new_rot @ P + new_origin = correct_3d_position for any 2D point P
+            # For fold_center: new_rot @ fold_center + new_origin = fold_center_3d
+            rotated_fold_center = (
+                new_rot[0][0] * fold.center[0] + new_rot[0][1] * fold.center[1],
+                new_rot[1][0] * fold.center[0] + new_rot[1][1] * fold.center[1],
+                new_rot[2][0] * fold.center[0] + new_rot[2][1] * fold.center[1]
             )
-            # Zone end in 3D is at the arc boundary (beyond = 0)
-            zone_end_3d = (
-                fold_center_3d[0] + (arc_end_perp - hw) * fold_perp_3d[0] + arc_end_up * up_3d[0],
-                fold_center_3d[1] + (arc_end_perp - hw) * fold_perp_3d[1] + arc_end_up * up_3d[1],
-                fold_center_3d[2] + (arc_end_perp - hw) * fold_perp_3d[2] + arc_end_up * up_3d[2]
-            )
-            # Compute what new_rot @ zone_end_2d would give
-            rotated_zone_end = (
-                new_rot[0][0] * zone_end_2d[0] + new_rot[0][1] * zone_end_2d[1],
-                new_rot[1][0] * zone_end_2d[0] + new_rot[1][1] * zone_end_2d[1],
-                new_rot[2][0] * zone_end_2d[0] + new_rot[2][1] * zone_end_2d[1]
-            )
-            # origin = zone_end_3d - rotated_zone_end
             origin = (
-                zone_end_3d[0] - rotated_zone_end[0],
-                zone_end_3d[1] - rotated_zone_end[1],
-                zone_end_3d[2] - rotated_zone_end[2]
+                fold_center_3d[0] - rotated_fold_center[0],
+                fold_center_3d[1] - rotated_fold_center[1],
+                fold_center_3d[2] - rotated_fold_center[2]
             )
             rot = new_rot
 
