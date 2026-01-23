@@ -355,6 +355,11 @@ def compute_normal(
             arc_fraction = dist_into_zone / fold.zone_width if fold.zone_width > 0 else 0
             theta = arc_fraction * fold.angle
 
+            # For back entry, negate theta to flip normal direction
+            # (cylinder axis is on opposite side, so outward direction is reversed)
+            if entered_from_back:
+                theta = -theta
+
             fold_rot = _rotation_matrix_around_axis(fold_axis_3d, theta)
             rot = _multiply_matrices(fold_rot, rot)
             break
