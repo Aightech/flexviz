@@ -15,6 +15,9 @@ PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
 if PLUGIN_DIR not in sys.path:
     sys.path.insert(0, PLUGIN_DIR)
 
+# Global reference to viewer window for single instance behavior
+_viewer_frame = None
+
 
 def reload_plugin_modules():
     """Reload all plugin modules for development hot-reload."""
@@ -148,7 +151,24 @@ class OpenViewerAction(pcbnew.ActionPlugin):
         self.icon_file_name = os.path.join(PLUGIN_DIR, "resources", "icon_open_viewer.png")
 
     def Run(self):
+        global _viewer_frame
+
         try:
+            # Check if viewer window already exists and is still open
+            if _viewer_frame is not None:
+                try:
+                    # Check if window still exists (not destroyed)
+                    if _viewer_frame and _viewer_frame.IsShown():
+                        # Bring existing window to front
+                        _viewer_frame.Raise()
+                        _viewer_frame.SetFocus()
+                        # Trigger refresh to reload PCB data
+                        _viewer_frame.on_refresh(None)
+                        return
+                except (RuntimeError, wx.PyDeadObjectError):
+                    # Window was destroyed, clear reference
+                    _viewer_frame = None
+
             # Hot-reload modules for development
             reload_plugin_modules()
 
@@ -189,6 +209,9 @@ class OpenViewerAction(pcbnew.ActionPlugin):
                 pcb_filepath=board_path
             )
             frame.Show()
+
+            # Store reference for single instance behavior
+            _viewer_frame = frame
 
         except Exception as e:
             import traceback

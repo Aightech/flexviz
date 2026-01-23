@@ -14,16 +14,16 @@ import math
 try:
     from .mesh import Mesh, create_board_geometry_mesh
     from .bend_transform import FoldDefinition, create_fold_definitions
-    from .geometry import BoardGeometry
-    from .markers import FoldMarker
+    from .geometry import BoardGeometry, extract_geometry
+    from .markers import FoldMarker, detect_fold_markers
     from .config import FlexConfig, FLEX_THICKNESS_PRESETS, STIFFENER_THICKNESS_PRESETS
     from .kicad_parser import KiCadPCB
     from .stiffener import extract_stiffeners
 except ImportError:
     from mesh import Mesh, create_board_geometry_mesh
     from bend_transform import FoldDefinition, create_fold_definitions
-    from geometry import BoardGeometry
-    from markers import FoldMarker
+    from geometry import BoardGeometry, extract_geometry
+    from markers import FoldMarker, detect_fold_markers
     from config import FlexConfig, FLEX_THICKNESS_PRESETS, STIFFENER_THICKNESS_PRESETS
     from kicad_parser import KiCadPCB
     from stiffener import extract_stiffeners
@@ -760,8 +760,57 @@ class FlexViewerFrame(wx.Frame):
                         )
 
     def on_refresh(self, event):
-        """Handle refresh button."""
-        self.update_mesh()
+        """Handle refresh button - reload PCB file from disk."""
+        if not self.pcb_filepath:
+            # No file path - just update mesh with current data
+            self.update_mesh()
+            return
+
+        try:
+            # Reload PCB from disk
+            self.pcb = KiCadPCB.load(self.pcb_filepath)
+            self.board_geometry = extract_geometry(self.pcb)
+            new_markers = detect_fold_markers(self.pcb)
+
+            # Preserve current fold angles if marker count matches
+            old_angles = [s.get_angle() for s in self.fold_sliders]
+
+            # Update fold markers
+            self.fold_markers = new_markers
+            self.folds = create_fold_definitions(new_markers)
+
+            # Rebuild fold sliders if marker count changed
+            if len(new_markers) != len(self.fold_sliders):
+                # Clear old sliders
+                for slider in self.fold_sliders:
+                    slider.Destroy()
+                self.fold_sliders = []
+
+                # Create new sliders
+                for i, marker in enumerate(new_markers):
+                    slider = FoldSlider(
+                        self.fold_panel, i, marker.angle_degrees,
+                        self.on_fold_angle_changed
+                    )
+                    self.fold_sizer.Add(slider, 0, wx.EXPAND | wx.ALL, 2)
+                    self.fold_sliders.append(slider)
+
+                self.fold_panel.Layout()
+            else:
+                # Restore old angles to sliders
+                for i, angle in enumerate(old_angles):
+                    if i < len(self.fold_sliders):
+                        self.fold_sliders[i].set_angle(angle)
+
+            # Update mesh
+            self.update_mesh()
+
+        except Exception as e:
+            wx.MessageBox(
+                f"Error refreshing from file:\n{e}",
+                "Refresh Error",
+                wx.OK | wx.ICON_ERROR
+            )
 
     def on_reset_view(self, event):
         """Reset camera to default view."""
