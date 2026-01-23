@@ -121,8 +121,9 @@ def extract_stiffeners(pcb: KiCadPCB, config: FlexConfig) -> list[StiffenerRegio
     Extract stiffener polygons from the configured layer.
 
     Detects cutouts (holes) within stiffener regions by analyzing polygon
-    winding order and containment. CCW polygons are outer boundaries,
-    CW polygons are holes assigned to their containing outer boundary.
+    containment. A polygon is a hole only if it's contained within another
+    polygon. Winding order alone is not reliable since KiCad users may draw
+    polygons in either direction.
 
     Args:
         pcb: Parsed KiCad PCB
@@ -139,52 +140,66 @@ def extract_stiffeners(pcb: KiCadPCB, config: FlexConfig) -> list[StiffenerRegio
     if not polygons:
         return []
 
-    # Separate polygons into outer boundaries and holes based on winding order
-    outer_boundaries = []
-    holes = []
+    # Filter out degenerate polygons
+    valid_polygons = [p for p in polygons if len(p) >= 3]
+    if not valid_polygons:
+        return []
 
-    for poly in polygons:
-        if len(poly) < 3:
-            continue
-        signed_area = _signed_polygon_area(poly)
-        if signed_area > 0:
-            # CCW winding = outer boundary
-            outer_boundaries.append(poly)
-        else:
-            # CW winding = hole (or reverse it to ensure consistency)
-            # Store as-is; KiCad typically exports holes with CW winding
-            holes.append(poly)
+    # Determine which polygons are holes by checking containment
+    # A polygon is a hole if its centroid is inside another polygon
+    n = len(valid_polygons)
+    is_hole = [False] * n
+    hole_parent = [-1] * n  # Index of containing polygon for each hole
 
-    # If no explicit outer boundaries found but we have holes,
-    # the "holes" might actually be outer boundaries with reversed winding
-    # In that case, reverse them
-    if not outer_boundaries and holes:
-        outer_boundaries = [list(reversed(h)) for h in holes]
-        holes = []
+    for i in range(n):
+        center_i = _polygon_centroid(valid_polygons[i])
+        for j in range(n):
+            if i == j:
+                continue
+            if point_in_polygon(center_i, valid_polygons[j]):
+                # Polygon i is inside polygon j
+                # Check that j is not also inside i (avoid mutual containment issues)
+                center_j = _polygon_centroid(valid_polygons[j])
+                if not point_in_polygon(center_j, valid_polygons[i]):
+                    is_hole[i] = True
+                    hole_parent[i] = j
+                    break
 
-    # Associate each hole with its containing outer boundary
-    # Create mapping: outer_index -> list of holes
-    outer_to_holes: dict[int, list[Polygon]] = {i: [] for i in range(len(outer_boundaries))}
+    # Collect outer boundaries (non-holes)
+    outer_indices = [i for i in range(n) if not is_hole[i]]
 
-    for hole in holes:
-        hole_center = _polygon_centroid(hole)
-        # Find which outer boundary contains this hole
-        for i, outer in enumerate(outer_boundaries):
-            if point_in_polygon(hole_center, outer):
-                outer_to_holes[i].append(hole)
-                break
+    # Build mapping: outer_index -> list of holes
+    outer_to_holes: dict[int, list[Polygon]] = {i: [] for i in outer_indices}
+
+    for i in range(n):
+        if is_hole[i] and hole_parent[i] in outer_to_holes:
+            outer_to_holes[hole_parent[i]].append(valid_polygons[i])
 
     # Create StiffenerRegion objects
-    return [
-        StiffenerRegion(
-            outline=outer,
-            cutouts=outer_to_holes[i],
+    # Ensure outer boundaries have CCW winding
+    result = []
+    for i in outer_indices:
+        outline = valid_polygons[i]
+        # Ensure CCW winding for outer boundary
+        if _signed_polygon_area(outline) < 0:
+            outline = list(reversed(outline))
+
+        # Ensure CW winding for holes
+        cutouts = []
+        for hole in outer_to_holes[i]:
+            if _signed_polygon_area(hole) > 0:
+                hole = list(reversed(hole))
+            cutouts.append(hole)
+
+        result.append(StiffenerRegion(
+            outline=outline,
+            cutouts=cutouts,
             layer=config.stiffener_layer,
             thickness=config.stiffener_thickness,
             side=config.stiffener_side
-        )
-        for i, outer in enumerate(outer_boundaries)
-    ]
+        ))
+
+    return result
 
 
 def point_in_polygon(point: Point, polygon: Polygon) -> bool:
