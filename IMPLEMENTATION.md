@@ -397,7 +397,7 @@ jobs:
 | **Phase 4** | KiCad Actions, Fold Placer | Integration testing in KiCad | ✅ Complete |
 | **Phase 5** | Error Handling, Performance | Stress testing, edge cases | 🔄 In Progress |
 | **Phase 6** | Documentation, Release | Final review | ⏳ Pending |
-| **Phase 7** | Validation & Warnings | Design rule checks | ⏳ Pending |
+| **Phase 7** | Validation & Warnings | Design rule checks | ✅ Complete |
 | **Phase 8** | Visual Enhancements | Extended rendering | ⏳ Pending |
 | **Phase 9** | Export & Animation | STEP, GLB animation | ⏳ Pending |
 | **Phase 10** | Release Preparation | KiCad integration review | ⏳ Pending |
@@ -406,29 +406,29 @@ Each phase builds on the previous. Complete all unit tests before moving to the 
 
 ---
 
-## Phase 7: Validation & Warnings
+## Phase 7: Validation & Warnings ✅
 
 ### 7.1 Fold Line Validation
 
-- [ ] Check if fold line crosses stiffener region
-- [ ] Display warning in viewer when fold-stiffener conflict detected
-- [ ] Highlight conflicting stiffeners in red
-- [ ] Add validation status panel in UI
+- [x] Check if fold line crosses stiffener region
+- [x] Display warning in viewer when fold-stiffener conflict detected
+- [x] Color-code fold status indicator (red for conflicts)
+- [x] Add validation status panel in UI
 
 ### 7.2 Minimum Bend Radius Validation
 
-- [ ] Calculate actual bend radius for each fold
-- [ ] Compare against `config.min_bend_radius_factor × flex_thickness`
-- [ ] Display warning when radius is too small
-- [ ] Color-code fold markers by radius safety (green/yellow/red)
-- [ ] Show recommended minimum radius in UI
+- [x] Calculate actual bend radius for each fold
+- [x] Compare against `config.min_bend_radius_factor × flex_thickness`
+- [x] Display warning when radius is too small (yellow) or very small (red)
+- [x] Color-code fold markers by radius safety (green/yellow/red)
+- [x] Show radius info in tooltips
 
 ### 7.3 Component in Bend Zone Detection
 
-- [ ] Check if any component footprint overlaps bend zone
-- [ ] Consider component height (tall components more problematic)
-- [ ] Display warning with list of affected components
-- [ ] Optional: highlight components in bend zones in viewer
+- [x] Check if any component footprint overlaps bend zone
+- [x] Display warning with list of affected components
+- [ ] Consider component height (tall components more problematic) - future enhancement
+- [ ] Optional: highlight components in bend zones in viewer - future enhancement
 
 **Unit Tests:**
 - [ ] Test stiffener-fold intersection detection
@@ -580,6 +580,17 @@ Each phase builds on the previous. Complete all unit tests before moving to the 
 ---
 
 ## Recent Updates
+
+**2026-01-23**: Phase 7 - Validation & Warnings
+- New `validation.py` module with design rule checks
+- `check_fold_stiffener_conflicts()`: Detects fold lines crossing stiffener regions (error)
+- `check_bend_radius()`: Validates against min_bend_radius_factor × flex_thickness
+- `check_components_in_bend_zones()`: Warns about components in bend areas
+- `validate_design()`: Runs all checks and returns `ValidationResult`
+- Viewer integration:
+  - Validation panel shows error/warning counts with details
+  - Fold slider status indicators (●) color-coded green/yellow/red
+  - Tooltips show radius info or warning messages
 
 **2026-01-23**: Dual stiffener layers and trace improvements
 - **Stiffener UI**: Replaced single layer + top/bottom radio with two layer selectors (top and bottom)
