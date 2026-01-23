@@ -399,7 +399,7 @@ jobs:
 | **Phase 6** | Documentation, Release | Final review | ⏳ Pending |
 | **Phase 7** | Validation & Warnings | Design rule checks | ✅ Complete |
 | **Phase 8** | Visual Enhancements | Extended rendering | 🔄 In Progress |
-| **Phase 9** | Export & Animation | STEP, GLB animation | ⏳ Pending |
+| **Phase 9** | Export & Animation | STEP, GLB animation | 🔄 STEP Complete, Animation Pending |
 | **Phase 10** | Release Preparation | KiCad integration review | ⏳ Pending |
 
 Each phase builds on the previous. Complete all unit tests before moving to the next phase.
@@ -486,14 +486,16 @@ Each phase builds on the previous. Complete all unit tests before moving to the 
 
 ## Phase 9: Export & Animation
 
-### 9.1 STEP Export
+### 9.1 STEP Export ✅
 
-- [ ] Research STEP export libraries (OCC, cadquery, build123d)
-- [ ] Convert mesh to solid geometry (watertight mesh)
-- [ ] Export board as STEP solid
-- [ ] Include stiffeners in STEP export
-- [ ] Optional: include 3D component models
-- [ ] Handle bent geometry correctly
+- [x] Research STEP export libraries (OCC, cadquery, build123d) → Using build123d
+- [x] Convert mesh to solid geometry (watertight mesh)
+- [x] Export board as STEP solid
+- [x] Include stiffeners in STEP export
+- [x] Optional: include 3D component models (--3d-models flag)
+- [x] Handle bent geometry correctly
+- [x] CLI tool: `step_export_cli.py` with full option support
+- [x] Viewer integration: "Export STEP" button shows CLI command (runs externally due to library conflicts)
 
 ### 9.2 Fold Animation Export (GLB)
 
@@ -505,7 +507,7 @@ Each phase builds on the previous. Complete all unit tests before moving to the 
 - [ ] Export individual frames as OBJ sequence (alternative)
 
 **Dependencies:**
-- STEP: `cadquery`, `OCP`, or `pythonocc-core`
+- STEP: `build123d` (installed in venv, run via CLI to avoid KiCad conflicts)
 - GLB: `pygltflib` or `trimesh` with gltf support
 
 **Unit Tests:**
@@ -583,6 +585,16 @@ Each phase builds on the previous. Complete all unit tests before moving to the 
 ---
 
 ## Recent Updates
+
+**2026-01-23**: Marker layer selection and improved marker detection
+- **Marker layer configuration**: Added `marker_layer` field to `FlexConfig`, dropdown in viewer UI to select which User layer contains fold markers
+- **STEP export integration**: CLI auto-generates export command with current settings (--marker-layer, --subdivisions, --stiffener-thickness)
+- **Dimension-first marker detection**: `detect_fold_markers()` now starts from each dimension's start point and finds the containing parallel line pair using `find_containing_line_pair()`. This prevents mismatch when multiple fold markers are close together.
+- **Axis normalization fix**: Fold axis direction is now normalized for consistency:
+  - Horizontal folds (abs(axis.x) >= abs(axis.y)): axis points in +X direction
+  - Vertical folds: axis points in +Y direction
+  - This ensures parallel folds have consistent perpendicular (perp) directions, fixing broken geometry on multi-fold boards
+- **New functions in markers.py**: `_point_between_parallel_lines()`, `_point_along_lines()`, `find_containing_line_pair()`
 
 **2026-01-23**: Phase 8 - Visual Enhancements (continued)
 - **3D Model Loading Complete**:

@@ -14,43 +14,36 @@ KiCad does not natively support flex PCB bend visualization in its 3D viewer. Th
 ## Features
 
 - **Direct KiCad integration**: Two action buttons in PCB Editor toolbar
-- **Visual fold markers**: Define bends using intuitive two-point placement
-- **Real-time preview**: Adjust bend angles with interactive sliders
+- **Visual fold markers**: Define bends using selection-based placement
+- **Real-time preview**: Adjust bend angles with interactive controls
 - **Performance modes**: From fast outline-only to full component rendering
-- **No external CAD required**: Pure Python implementation, no FreeCAD/STEP workflow
+- **3D model support**: Load and display component 3D models (WRL/STEP)
+- **Stiffener regions**: Define and visualize stiffener areas
+- **STEP export**: Export bent geometry to STEP format for CAD tools
+- **Configurable marker layer**: Use any User layer for fold markers
+- **Design validation**: Warnings for bend radius, stiffener conflicts, components in bend zones
 
 ## Plugin Buttons
 
 ### Button 1: Create Fold
 
-Two-point placement workflow with visual feedback:
+Selection-based workflow:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│ 1. Click "Create Fold" button                               │
-│    └─► Status: "Click point A (ESC to cancel)"              │
+│ 1. Draw a graphic line on User layer where you want the     │
+│    fold (the line defines fold position and direction)      │
 │                                                             │
-│ 2. Click point A on board edge                              │
-│    └─► Temporary marker appears (●)                         │
-│    └─► Status: "Click point B (ESC to cancel)"              │
+│ 2. Select the line in KiCad                                 │
 │                                                             │
-│ 3a. Click point B on opposite edge                          │
-│    └─► Preview line shown while moving cursor               │
-│    └─► Final dotted lines + dimension created               │
-│    └─► Temporary graphics removed                           │
-│    └─► Angle dialog: set bend angle (default: 90°)          │
-│                                                             │
-│ 3b. Press ESC or right-click at any time                    │
-│    └─► Cancel operation                                     │
-│    └─► Remove temporary graphics                            │
-│    └─► Return to normal mode                                │
+│ 3. Click "Create Fold" button                               │
+│    └─► Dialog opens with angle and zone width inputs        │
+│    └─► Creates two parallel dotted lines + dimension        │
+│    └─► Original line is replaced with fold marker           │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**Visual Feedback During Placement:**
-- Point A set: small circle marker at click position
-- Moving cursor: dashed preview line from A following mouse
-- Point B set: preview disappears, final geometry created
+**Alternative:** If no line is selected, a dialog prompts for manual coordinate entry.
 
 ### Button 2: Open Viewer
 
@@ -69,7 +62,7 @@ Opens the 3D visualization window with:
 │  │ Toolbar: [Create Fold] [Open Viewer]                │    │
 │  └─────────────────────────────────────────────────────┘    │
 │  ┌───────────────────────────────────────────────────────┐  │
-│  │  Board with fold markers on User.1 layer              │  │
+│  │  Board with fold markers on User layer (configurable) │  │
 │  └───────────────────────────────────────────────────────┘  │
 └─────────────────────┬───────────────────────────────────────┘
                       │ "Open Viewer" clicked
@@ -96,7 +89,7 @@ Opens the 3D visualization window with:
 
 ## Fold Marker System
 
-Fold markers are placed on User.1 layer and consist of three elements:
+Fold markers are placed on a User layer (configurable, default: User.1) and consist of three elements:
 
 ```
         ┆       ┆
@@ -240,13 +233,14 @@ For a fold at position P, with axis direction A, radius R, and angle θ:
 ## Future Enhancements
 
 - [ ] Fold animation / stepped preview
-- [ ] Export to STEP (via pythonOCC)
+- [x] ~~Export to STEP~~ (completed via build123d)
 - [ ] Collision detection between folded sections
 - [ ] Integration with DRC for bend radius rules
 - [ ] Support for rigid-flex zone definitions
-- [ ] Snap to board edge when placing fold points
 - [ ] Edit existing fold markers (move, change angle)
 - [ ] Delete fold marker tool
+- [ ] Silkscreen layer display
+- [ ] Copper zone fill visualization
 
 ## License
 

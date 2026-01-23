@@ -48,7 +48,7 @@ pip install pytest pytest-cov numpy pyvista
 
 2. **geometry.py**: Extracts board geometry (outline, traces, pads, components) from parsed PCB data into a `BoardGeometry` dataclass.
 
-3. **markers.py**: Detects fold markers from User.1 layer (dotted line pairs + dimension text) and builds `FoldMarker` objects containing angle and position data.
+3. **markers.py**: Detects fold markers from a configurable User layer (default: User.1). Uses dimension-first detection: starts from each dimension's start point and finds the containing parallel line pair. This avoids mismatch when markers are close together. Fold axis direction is normalized for consistency (horizontal folds: +X, vertical folds: +Y) to ensure parallel folds have consistent perpendicular directions.
 
 4. **bend_transform.py**: Transforms 2D flat geometry into 3D bent geometry. `FoldDefinition` encapsulates fold parameters. Points are classified as before/in/after the bend zone and transformed accordingly (cylindrical mapping in bend zone, rotation+translation after).
 
@@ -64,10 +64,20 @@ pip install pytest pytest-cov numpy pyvista
 
 ### Fold Marker Convention
 
-Fold markers on User.1 layer consist of:
+Fold markers on a User layer (configurable via viewer or config) consist of:
 - Two parallel dotted lines defining the bend zone boundaries
 - A dimension object between them showing the bend angle (positive = toward viewer)
 - Bend radius is derived from: `R = line_distance / angle_in_radians`
+- Marker detection uses dimension-first approach: finds the dimension start point, then locates containing parallel lines
+
+### Configuration
+
+`config.py` manages user preferences via `FlexConfig` class:
+- `marker_layer`: Layer for fold markers (default: "User.1")
+- `bend_subdivisions`: Number of subdivisions in bend zones
+- `stiffener_layer_top/bottom`: Layers for stiffener regions
+- `stiffener_thickness`: Thickness of stiffeners in mm
+- Settings are saved per-PCB in `<pcb_name>.flexviewer.json`
 
 ### Test Data
 
