@@ -1362,6 +1362,69 @@ def get_shared_edge_midpoint(region_a: Region, region_b: Region) -> Optional[Poi
     return ((p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2)
 
 
+def region_in_fold_column(fold_marker, region: Region) -> bool:
+    """
+    Check if a region is in the "column" of a fold - the band of board
+    that the fold affects, extending infinitely along the fold direction.
+
+    This is a broader check than fold_reaches_region: it returns True for
+    both IN_ZONE regions (touched by marker lines) AND AFTER regions
+    (beyond the marker lines but in the same band).
+
+    For a vertical fold (markers oriented vertically):
+    - The column is defined by the X-range of the marker endpoints
+    - A region is in the column if its bounding box X-range overlaps
+
+    Args:
+        fold_marker: FoldMarker with line_a_start, line_a_end, etc.
+        region: Region to check
+
+    Returns:
+        True if the region is in the fold's column
+    """
+    # Get fold marker line endpoints
+    marker_xs = [
+        fold_marker.line_a_start[0], fold_marker.line_a_end[0],
+        fold_marker.line_b_start[0], fold_marker.line_b_end[0]
+    ]
+    marker_ys = [
+        fold_marker.line_a_start[1], fold_marker.line_a_end[1],
+        fold_marker.line_b_start[1], fold_marker.line_b_end[1]
+    ]
+
+    # Get the marker bounding box
+    marker_x_min, marker_x_max = min(marker_xs), max(marker_xs)
+    marker_y_min, marker_y_max = min(marker_ys), max(marker_ys)
+
+    # Get region bounding box
+    region_xs = [p[0] for p in region.outline]
+    region_ys = [p[1] for p in region.outline]
+    region_x_min, region_x_max = min(region_xs), max(region_xs)
+    region_y_min, region_y_max = min(region_ys), max(region_ys)
+
+    # Determine fold orientation by which axis the marker lines span more.
+    # If markers span more in X (horizontal lines), the fold affects a vertical
+    # "column" defined by that X range.
+    # If markers span more in Y (vertical lines), the fold affects a horizontal
+    # "band" defined by that Y range.
+    marker_x_span = marker_x_max - marker_x_min
+    marker_y_span = marker_y_max - marker_y_min
+
+    # Small tolerance for floating point
+    eps = 0.1
+
+    if marker_x_span > marker_y_span:
+        # Markers are horizontal (span X direction) - fold is a horizontal crease
+        # The fold's column is defined by its X range
+        # Regions must overlap in X to be in the column
+        return not (region_x_max < marker_x_min - eps or region_x_min > marker_x_max + eps)
+    else:
+        # Markers are vertical (span Y direction) - fold is a vertical crease
+        # The fold's column is defined by its Y range
+        # Regions must overlap in Y to be in the column
+        return not (region_y_max < marker_y_min - eps or region_y_min > marker_y_max + eps)
+
+
 def fold_reaches_region(fold_marker, region: Region) -> bool:
     """
     Check if a fold's marker lines actually touch a region.
@@ -1414,7 +1477,7 @@ def detect_crossed_folds(
     region_from: Region,
     region_to: Region,
     fold_markers: list,
-    already_in_recipe: list,
+    already_in_recipe_with_class: list,
     fold_extents: dict = None
 ) -> list[tuple[object, str]]:
     """
@@ -1424,50 +1487,86 @@ def detect_crossed_folds(
     finite extent (where it intersects the board) actually crosses the
     boundary between the two regions.
 
+    Entry Direction Detection:
+    - Front entry (entered_from_back=False): crossing from BEFORE into IN_ZONE or AFTER
+    - Back entry (entered_from_back=True): crossing from AFTER into IN_ZONE or BEFORE
+
+    Back entry occurs in multi-fold configurations where BFS traversal reaches
+    a fold from its "far side" (geometrically past the fold). The entry direction
+    is tracked so the transformation can mirror appropriately.
+
     Args:
         region_from: Source region
         region_to: Destination region
         fold_markers: List of all FoldMarker objects
-        already_in_recipe: List of fold markers already in the recipe
+        already_in_recipe_with_class: List of (fold, classification, entered_from_back) tuples
         fold_extents: Dict mapping fold marker id to (p1, p2) extent on board
 
     Returns:
-        List of (fold_marker, classification) tuples for newly crossed folds.
+        List of (fold_marker, classification, entered_from_back) tuples for newly crossed folds.
     """
     crossed = []
 
     point_from = region_from.representative_point
     point_to = region_to.representative_point
 
+    # Extract just the fold objects for presence checking
+    already_in_recipe = [entry[0] for entry in already_in_recipe_with_class]
+
     for fold in fold_markers:
-        # FINITE FOLD CHECK: Skip folds that don't physically reach the destination region
-        if fold_extents is not None:
+        # Check if fold is already in recipe using identity comparison
+        already_present = any(f is fold for f in already_in_recipe)
+
+        # FINITE FOLD CHECK: Skip folds that don't affect the destination region
+        # BUT only apply this for NEW folds, not for folds already in recipe that
+        # need to upgrade from IN_ZONE to AFTER.
+        if not already_present and fold_extents is not None:
             fold_extent = fold_extents.get(id(fold))
 
             # If fold has no extent (doesn't intersect board), skip it entirely
             if fold_extent is None:
                 continue
 
-            # Check if the fold's marker lines actually touch the destination region
-            # This is the key check for H-shaped boards: a fold on one arm
-            # shouldn't affect regions on the other arm
-            if not fold_reaches_region(fold, region_to):
+            # Check if the fold affects the destination region:
+            # - fold_reaches_region: marker lines touch the region boundary
+            # - region_in_fold_column: region is in the fold's band of influence
+            # A region can be fully inside the fold zone without touching markers
+            if not fold_reaches_region(fold, region_to) and not region_in_fold_column(fold, region_to):
                 continue
 
-        # Check if fold is already in recipe using identity comparison
-        already_present = any(f is fold for f in already_in_recipe)
-
-        class_from = classify_point_vs_fold(point_from, fold)
         class_to = classify_point_vs_fold(point_to, fold)
 
-        # For folds not yet in recipe: add when crossing from BEFORE
+        # For folds not yet in recipe: add when crossing into the fold
+        # Recipe format: (fold, classification, entered_from_back)
         if not already_present:
+            class_from = classify_point_vs_fold(point_from, fold)
+            # Detect crossing from BEFORE into fold (normal entry)
             if class_from == "BEFORE" and class_to != "BEFORE":
-                crossed.append((fold, class_to))
+                crossed.append((fold, class_to, False))  # entered_from_back = False
+            # Also detect crossing from AFTER into fold (back entry)
+            elif class_from == "AFTER" and class_to == "IN_ZONE":
+                crossed.append((fold, "IN_ZONE", True))  # entered_from_back = True
+            elif class_from == "AFTER" and class_to == "BEFORE":
+                # Crossed entire fold from back - treat as AFTER
+                crossed.append((fold, "AFTER", True))  # entered_from_back = True
         else:
             # For folds already in recipe: upgrade IN_ZONE to AFTER
-            if class_from == "IN_ZONE" and class_to == "AFTER":
-                crossed.append((fold, "AFTER"))
+            # Use the RECIPE classification (not point-based) to handle cases
+            # where hole geometry causes regions to reconnect unexpectedly.
+            current_class = None
+            current_back = False
+            for entry in already_in_recipe_with_class:
+                f = entry[0]
+                c = entry[1]
+                back = entry[2] if len(entry) > 2 else False
+                if f is fold:
+                    current_class = c
+                    current_back = back
+                    break
+
+            # Upgrade if currently IN_ZONE and destination is not IN_ZONE
+            if current_class == "IN_ZONE" and class_to != "IN_ZONE":
+                crossed.append((fold, "AFTER", current_back))  # preserve entry direction
 
     return crossed
 
@@ -1526,35 +1625,36 @@ def compute_fold_recipes(
 
             neighbor = region_by_index[neighbor_idx]
 
-            # Get folds already in current's recipe (as list for identity comparison)
-            already_in_recipe = [fold for fold, _ in current.fold_recipe]
-
             # Detect newly crossed folds (using finite fold segments)
+            # Pass full recipe with classifications for proper IN_ZONE → AFTER upgrade
             crossed = detect_crossed_folds(
-                current, neighbor, fold_markers, already_in_recipe, fold_extents
+                current, neighbor, fold_markers, current.fold_recipe, fold_extents
             )
 
-            # Neighbor's recipe starts with current's recipe.
-            # We inherit all folds - the BFS traversal ensures correct propagation.
-            # (The fold_reaches_region check was too aggressive and filtered out
-            # AFTER folds where the marker lines don't intersect the region boundary)
+            # Neighbor's recipe inherits ALL folds from current.
+            # Once you've crossed a fold, it stays in your recipe - you don't
+            # "uncross" it by moving sideways to a different column.
             neighbor.fold_recipe = list(current.fold_recipe)
 
             # Add crossed folds, handling upgrades from IN_ZONE to AFTER
-            for fold, classification in crossed:
+            # Recipe format: (fold, classification, entered_from_back)
+            for fold, classification, entered_from_back in crossed:
                 # Check if this fold is already in recipe (as IN_ZONE)
                 existing_idx = None
-                for i, (f, c) in enumerate(neighbor.fold_recipe):
+                for i, entry in enumerate(neighbor.fold_recipe):
+                    f = entry[0]
                     if f is fold:
                         existing_idx = i
                         break
 
                 if existing_idx is not None:
-                    # Upgrade classification if needed
+                    # Upgrade classification if needed, preserve entry direction
                     if classification == "AFTER":
-                        neighbor.fold_recipe[existing_idx] = (fold, "AFTER")
+                        old_entry = neighbor.fold_recipe[existing_idx]
+                        old_back = old_entry[2] if len(old_entry) > 2 else False
+                        neighbor.fold_recipe[existing_idx] = (fold, "AFTER", old_back)
                 else:
-                    neighbor.fold_recipe.append((fold, classification))
+                    neighbor.fold_recipe.append((fold, classification, entered_from_back))
 
             visited.add(neighbor_idx)
             queue.append(neighbor)
@@ -1574,7 +1674,8 @@ def compute_fold_recipes(
                     region.representative_point, fold
                 )
                 if classification != "BEFORE":
-                    region.fold_recipe.append((fold, classification))
+                    # For disconnected regions, assume normal entry (not from back)
+                    region.fold_recipe.append((fold, classification, False))
 
 
 def find_containing_region(point: Point, regions: list[Region]) -> Optional[Region]:
