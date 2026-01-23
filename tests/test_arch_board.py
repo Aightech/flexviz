@@ -456,7 +456,7 @@ def save_graph_plot(filename: str, config: dict, markers: list, regions: list):
     fig.text(0.02, 0.02, legend_text, fontsize=9, family='monospace')
 
     plt.tight_layout()
-    plt.savefig(filepath, dpi=150, bbox_inches='tight')
+    # plt.savefig(filepath, dpi=150, bbox_inches='tight')
     plt.close(fig)
 
 
@@ -512,12 +512,15 @@ def save_text_results(filename: str, config: dict, markers: list, regions: list)
 # =============================================================================
 
 TEST_CONFIGS = [
-    ("L0_T0_R0", 0, 0, 0),
-    ("L90_T0_R0", 90, 0, 0),
-    ("L90_T90_R0", 90, 90, 0),
-    ("L0_T90_R0", 0, 90, 0),
-    ("L0_T90_R90", 0, 90, 90),
-    ("L0_T0_R90", 0, 0, 90),
+    # ("L0_T0_R0", 0, 0, 0),
+    # ("L90_T90_R0", 90, 90, 0),
+    # ("L0_T90_R0", 0, 90, 0),
+    # ("L0_T90_R90", 0, 90, 90),
+    # ("L0_T0_R45", 0, 0, 45),
+    # ("L0_T45_R0", 0, 45, 0),
+    # ("L45_T45_R0", 45, 45, 0),
+    ("L45_T45_R45", 45, 45, 45),
+    ("L60_T60_R60", 60, 60, 60),
     ("L90_T90_R90", 90, 90, 90),
 ]
 

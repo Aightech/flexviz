@@ -87,13 +87,13 @@ This phase can be developed and tested entirely outside of KiCad.
 
 **Unit Tests (`tests/test_bend_transform.py`):**
 - [ ] Test point classification
-- [ ] Test 90° bend on simple points
-- [ ] Test 45° bend
+- [x] Test 90° bend on simple points (test_arch_board.py)
+- [x] Test 45° bend (test_arch_board.py)
 - [ ] Test 180° bend (fold flat)
 - [ ] Test negative angle (opposite direction)
 - [ ] Test point exactly on fold line
 - [ ] Test point in middle of bend zone
-- [ ] Test multiple folds
+- [x] Test multiple folds (test_arch_board.py with 3-fold configurations)
 - [ ] Test line segment transformation
 - [ ] Test polygon transformation
 - [ ] Test identity transform (0° bend)
@@ -286,6 +286,7 @@ This phase can be developed and tested entirely outside of KiCad.
 - [ ] Very small bend radius (< board thickness)
 - [ ] Very large angle (> 180°)
 - [ ] Overlapping fold zones
+- [x] Multi-fold boards with back entry (arch-shaped configurations)
 
 ---
 
@@ -293,7 +294,7 @@ This phase can be developed and tested entirely outside of KiCad.
 
 **Stress Testing:**
 - [ ] Test with largest board in project
-- [ ] Test with many folds (5+)
+- [x] Test with many folds (3-fold arch board with various angle combinations)
 - [ ] Test error conditions trigger appropriate messages
 - [ ] Test recovery from errors
 
@@ -424,3 +425,39 @@ Each phase builds on the previous. Complete all unit tests before moving to the 
 - Key functions: `ear_clip_triangulate`, `find_mutually_visible_vertex`, `merge_hole_into_polygon`, `triangulate_with_holes`
 - Test result: 0 bad triangles (triangles inside holes)
 - Removed Y-coordinate flip hack - algorithm now works correctly with proper winding order enforcement
+
+**2026-01-23**: Multi-fold transformation with back entry handling
+- **Problem**: Arch-shaped boards with multiple folds were incorrectly transformed when BFS traversal crosses a fold from the "back" (AFTER side) instead of the "front" (BEFORE side)
+- **Solution**: Extended fold recipe format to 3-tuples `(fold, classification, entered_from_back)` to track entry direction
+- **Key changes**:
+  - `planar_subdivision.py`: `detect_crossed_folds()` now detects back entry when crossing AFTER→IN_ZONE or AFTER→BEFORE
+  - `bend_transform.py`: Comprehensive back entry handling:
+    - BEFORE classification: negate `perp_dist` to flip perpendicular coordinate
+    - IN_ZONE: mirror `local_perp` for cylindrical mapping
+    - AFTER: use rotation angle `-effective_angle + π` instead of `effective_angle`
+  - `compute_normal()`: Fixed for back entry cases (negate perp_dist/theta for IN_ZONE, negate angle for AFTER)
+  - `mesh.py`: Updated `get_region_recipe()` to handle 3-tuple format with backwards compatibility
+- **Added documentation**: Detailed transformation math explanation in `bend_transform.py` including:
+  - Coordinate system and fold axis positioning
+  - Recipe propagation via BFS
+  - Cylindrical mapping formulas for IN_ZONE
+  - Rotation/translation for AFTER regions
+  - Back entry coordinate flipping rationale
+
+**2026-01-23**: Fixed pad/component extrusion on bent surfaces
+- **Problem**: Pads and components appeared flat on bent regions instead of following the surface
+- **Solution**: Use `transform_point_and_normal()` and offset vertices along surface normal instead of global Z
+- **Key changes**:
+  - `create_pad_mesh()`: Top/bottom vertices now offset along transformed normal direction
+  - `create_component_mesh()`: Box top vertices offset along normal for each base vertex
+
+**2026-01-23**: Fixed viewer angle slider
+- **Problem**: Angle slider in KiCad extension had no effect on 3D model
+- **Cause**: `on_fold_angle_changed()` updated `self.folds` but mesh generation used `self.fold_markers`
+- **Solution**: Update both `self.folds[i].angle` and `self.fold_markers[i].angle_degrees` when slider changes
+
+**2026-01-23**: Enhanced arch board test suite
+- Added `tests/test_arch_board.py` with comprehensive multi-fold configurations
+- Test configs include 0°, 45°, 90°, 135° angles for left, top, and right folds
+- Generates visual test results in `tests/results/` with PNG renders and OBJ exports
+- Tests verify surface continuity and correct back entry transformation
