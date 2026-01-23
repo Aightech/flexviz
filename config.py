@@ -17,9 +17,9 @@ class FlexConfig:
 
     Attributes:
         flex_thickness: PCB thickness in mm (read from board settings by default)
-        stiffener_layer: KiCad layer name containing stiffener outlines (e.g., "User.2")
+        stiffener_layer_top: KiCad layer for top stiffeners (empty = none)
+        stiffener_layer_bottom: KiCad layer for bottom stiffeners (empty = none)
         stiffener_thickness: Stiffener material thickness in mm (0 = no stiffener)
-        stiffener_side: Which side the stiffener is bonded to ("top" or "bottom")
         show_thickness: Whether to render 3D extrusion or flat surface
         min_bend_radius_factor: Minimum bend radius = factor × flex_thickness
         bend_subdivisions: Number of strips to subdivide bend zone for smooth curves
@@ -27,10 +27,10 @@ class FlexConfig:
     # PCB parameters
     flex_thickness: float = 1.6  # mm (default PCB thickness, overridden from board settings)
 
-    # Stiffener parameters
-    stiffener_layer: str = "User.2"  # KiCad layer containing stiffener outlines
+    # Stiffener parameters (separate layers for top and bottom)
+    stiffener_layer_top: str = ""  # KiCad layer for top stiffeners (empty = none)
+    stiffener_layer_bottom: str = "User.2"  # KiCad layer for bottom stiffeners
     stiffener_thickness: float = 0.0  # mm (0 = no stiffener)
-    stiffener_side: str = "bottom"  # "top" or "bottom"
 
     # Visualization
     show_thickness: bool = True  # 3D extrusion vs flat surface
@@ -56,9 +56,6 @@ class FlexConfig:
         if self.stiffener_thickness < 0:
             errors.append(f"stiffener_thickness cannot be negative, got {self.stiffener_thickness}")
 
-        if self.stiffener_side not in ("top", "bottom"):
-            errors.append(f"stiffener_side must be 'top' or 'bottom', got '{self.stiffener_side}'")
-
         if self.min_bend_radius_factor < 1.0:
             errors.append(f"min_bend_radius_factor should be >= 1.0, got {self.min_bend_radius_factor}")
 
@@ -76,16 +73,26 @@ class FlexConfig:
 
     @property
     def has_stiffener(self) -> bool:
-        """Check if stiffener is configured."""
-        return self.stiffener_thickness > 0
+        """Check if any stiffener is configured."""
+        return self.stiffener_thickness > 0 and bool(self.stiffener_layer_top or self.stiffener_layer_bottom)
+
+    @property
+    def has_top_stiffener(self) -> bool:
+        """Check if top stiffener is configured."""
+        return self.stiffener_thickness > 0 and bool(self.stiffener_layer_top)
+
+    @property
+    def has_bottom_stiffener(self) -> bool:
+        """Check if bottom stiffener is configured."""
+        return self.stiffener_thickness > 0 and bool(self.stiffener_layer_bottom)
 
     def to_dict(self) -> dict:
         """Convert to dictionary for serialization."""
         return {
             "flex_thickness": self.flex_thickness,
-            "stiffener_layer": self.stiffener_layer,
+            "stiffener_layer_top": self.stiffener_layer_top,
+            "stiffener_layer_bottom": self.stiffener_layer_bottom,
             "stiffener_thickness": self.stiffener_thickness,
-            "stiffener_side": self.stiffener_side,
             "show_thickness": self.show_thickness,
             "min_bend_radius_factor": self.min_bend_radius_factor,
             "bend_subdivisions": self.bend_subdivisions,
@@ -94,11 +101,21 @@ class FlexConfig:
     @classmethod
     def from_dict(cls, data: dict) -> "FlexConfig":
         """Create from dictionary."""
+        # Handle legacy config with stiffener_layer + stiffener_side
+        if "stiffener_layer" in data and "stiffener_side" in data:
+            layer = data.get("stiffener_layer", "User.2")
+            side = data.get("stiffener_side", "bottom")
+            layer_top = layer if side == "top" else ""
+            layer_bottom = layer if side == "bottom" else ""
+        else:
+            layer_top = data.get("stiffener_layer_top", "")
+            layer_bottom = data.get("stiffener_layer_bottom", "User.2")
+
         return cls(
             flex_thickness=data.get("flex_thickness", 0.11),
-            stiffener_layer=data.get("stiffener_layer", "User.2"),
+            stiffener_layer_top=layer_top,
+            stiffener_layer_bottom=layer_bottom,
             stiffener_thickness=data.get("stiffener_thickness", 0.0),
-            stiffener_side=data.get("stiffener_side", "bottom"),
             show_thickness=data.get("show_thickness", True),
             min_bend_radius_factor=data.get("min_bend_radius_factor", 6.0),
             bend_subdivisions=data.get("bend_subdivisions", 8),

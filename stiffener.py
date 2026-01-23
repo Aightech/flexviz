@@ -116,26 +116,29 @@ def _polygon_centroid(polygon: Polygon) -> Point:
     return (cx, cy)
 
 
-def extract_stiffeners(pcb: KiCadPCB, config: FlexConfig) -> list[StiffenerRegion]:
+def _extract_stiffeners_from_layer(
+    pcb: KiCadPCB,
+    layer: str,
+    thickness: float,
+    side: str
+) -> list[StiffenerRegion]:
     """
-    Extract stiffener polygons from the configured layer.
+    Extract stiffener polygons from a specific layer.
 
     Detects cutouts (holes) within stiffener regions by analyzing polygon
     containment. A polygon is a hole only if it's contained within another
-    polygon. Winding order alone is not reliable since KiCad users may draw
-    polygons in either direction.
+    polygon.
 
     Args:
         pcb: Parsed KiCad PCB
-        config: Flex configuration specifying stiffener layer and thickness
+        layer: KiCad layer name to extract from
+        thickness: Stiffener thickness in mm
+        side: "top" or "bottom"
 
     Returns:
         List of StiffenerRegion objects with associated cutouts
     """
-    if not config.has_stiffener:
-        return []
-
-    polygons = pcb.get_layer_polygon_vertices(config.stiffener_layer)
+    polygons = pcb.get_layer_polygon_vertices(layer)
 
     if not polygons:
         return []
@@ -197,9 +200,40 @@ def extract_stiffeners(pcb: KiCadPCB, config: FlexConfig) -> list[StiffenerRegio
         result.append(StiffenerRegion(
             outline=outline,
             cutouts=cutouts,
-            layer=config.stiffener_layer,
-            thickness=config.stiffener_thickness,
-            side=config.stiffener_side
+            layer=layer,
+            thickness=thickness,
+            side=side
+        ))
+
+    return result
+
+
+def extract_stiffeners(pcb: KiCadPCB, config: FlexConfig) -> list[StiffenerRegion]:
+    """
+    Extract stiffener polygons from configured top and bottom layers.
+
+    Args:
+        pcb: Parsed KiCad PCB
+        config: Flex configuration specifying stiffener layers and thickness
+
+    Returns:
+        List of StiffenerRegion objects with associated cutouts
+    """
+    if not config.has_stiffener:
+        return []
+
+    result = []
+
+    # Extract top stiffeners
+    if config.has_top_stiffener:
+        result.extend(_extract_stiffeners_from_layer(
+            pcb, config.stiffener_layer_top, config.stiffener_thickness, "top"
+        ))
+
+    # Extract bottom stiffeners
+    if config.has_bottom_stiffener:
+        result.extend(_extract_stiffeners_from_layer(
+            pcb, config.stiffener_layer_bottom, config.stiffener_thickness, "bottom"
         ))
 
     return result

@@ -331,7 +331,7 @@ class GLCanvas(glcanvas.GLCanvas):
 
 
 class FoldSlider(wx.Panel):
-    """A labeled slider for controlling fold angle."""
+    """A labeled control for setting fold angle."""
 
     def __init__(self, parent, fold_index: int, initial_angle: float, callback):
         super().__init__(parent)
@@ -346,39 +346,38 @@ class FoldSlider(wx.Panel):
         self.label = wx.StaticText(self, label=f"Fold {fold_index + 1}:")
         sizer.Add(self.label, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
 
-        # Slider (-180 to 180 degrees)
-        self.slider = wx.Slider(
+        # Spin control (-360 to 360 degrees)
+        self.spin = wx.SpinCtrlDouble(
             self,
-            value=int(initial_angle),
-            minValue=-180,
-            maxValue=180,
-            style=wx.SL_HORIZONTAL
+            value=str(initial_angle),
+            min=-360.0,
+            max=360.0,
+            inc=1.0,
+            size=(80, -1)
         )
-        sizer.Add(self.slider, 1, wx.EXPAND | wx.RIGHT, 5)
+        self.spin.SetDigits(1)
+        sizer.Add(self.spin, 0, wx.RIGHT, 5)
 
-        # Value display
-        self.value_text = wx.StaticText(self, label=f"{initial_angle:.0f}°", size=(50, -1))
-        sizer.Add(self.value_text, 0, wx.ALIGN_CENTER_VERTICAL)
+        # Degree symbol
+        sizer.Add(wx.StaticText(self, label="°"), 0, wx.ALIGN_CENTER_VERTICAL)
 
         self.SetSizer(sizer)
 
         # Bind event
-        self.slider.Bind(wx.EVT_SLIDER, self.on_slider)
+        self.spin.Bind(wx.EVT_SPINCTRLDOUBLE, self.on_spin)
 
-    def on_slider(self, event):
-        """Handle slider change."""
-        value = self.slider.GetValue()
-        self.value_text.SetLabel(f"{value}°")
+    def on_spin(self, event):
+        """Handle spin control change."""
+        value = self.spin.GetValue()
         self.callback(self.fold_index, value)
 
     def get_angle(self) -> float:
         """Get current angle in degrees."""
-        return float(self.slider.GetValue())
+        return self.spin.GetValue()
 
     def set_angle(self, angle: float):
         """Set angle in degrees."""
-        self.slider.SetValue(int(angle))
-        self.value_text.SetLabel(f"{int(angle)}°")
+        self.spin.SetValue(angle)
 
 
 class FlexViewerFrame(wx.Frame):
@@ -541,18 +540,6 @@ class FlexViewerFrame(wx.Frame):
         stiffener_box = wx.StaticBox(control_panel, label="Stiffener")
         stiffener_sizer = wx.StaticBoxSizer(stiffener_box, wx.VERTICAL)
 
-        # Stiffener layer
-        stiff_layer_sizer = wx.BoxSizer(wx.HORIZONTAL)
-        stiff_layer_sizer.Add(wx.StaticText(control_panel, label="Layer:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
-        self.choice_stiffener_layer = wx.Choice(control_panel, choices=self.available_layers, size=(80, -1))
-        if self.config.stiffener_layer in self.available_layers:
-            self.choice_stiffener_layer.SetSelection(self.available_layers.index(self.config.stiffener_layer))
-        elif self.available_layers:
-            self.choice_stiffener_layer.SetSelection(0)
-        self.choice_stiffener_layer.Bind(wx.EVT_CHOICE, self.on_settings_changed)
-        stiff_layer_sizer.Add(self.choice_stiffener_layer, 0)
-        stiffener_sizer.Add(stiff_layer_sizer, 0, wx.ALL, 3)
-
         # Stiffener thickness
         stiff_thick_sizer = wx.BoxSizer(wx.HORIZONTAL)
         stiff_thick_sizer.Add(wx.StaticText(control_panel, label="Thickness:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
@@ -568,20 +555,30 @@ class FlexViewerFrame(wx.Frame):
         stiff_thick_sizer.Add(wx.StaticText(control_panel, label="mm"), 0, wx.ALIGN_CENTER_VERTICAL)
         stiffener_sizer.Add(stiff_thick_sizer, 0, wx.ALL, 3)
 
-        # Stiffener side
-        stiff_side_sizer = wx.BoxSizer(wx.HORIZONTAL)
-        stiff_side_sizer.Add(wx.StaticText(control_panel, label="Side:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
-        self.radio_stiff_top = wx.RadioButton(control_panel, label="Top", style=wx.RB_GROUP)
-        self.radio_stiff_bottom = wx.RadioButton(control_panel, label="Bottom")
-        if self.config.stiffener_side == "top":
-            self.radio_stiff_top.SetValue(True)
+        # Top stiffener layer
+        layer_choices_with_none = ["(none)"] + self.available_layers
+        stiff_top_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        stiff_top_sizer.Add(wx.StaticText(control_panel, label="Top layer:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
+        self.choice_stiffener_layer_top = wx.Choice(control_panel, choices=layer_choices_with_none, size=(80, -1))
+        if self.config.stiffener_layer_top and self.config.stiffener_layer_top in self.available_layers:
+            self.choice_stiffener_layer_top.SetSelection(self.available_layers.index(self.config.stiffener_layer_top) + 1)
         else:
-            self.radio_stiff_bottom.SetValue(True)
-        self.radio_stiff_top.Bind(wx.EVT_RADIOBUTTON, self.on_settings_changed)
-        self.radio_stiff_bottom.Bind(wx.EVT_RADIOBUTTON, self.on_settings_changed)
-        stiff_side_sizer.Add(self.radio_stiff_top, 0, wx.RIGHT, 5)
-        stiff_side_sizer.Add(self.radio_stiff_bottom, 0)
-        stiffener_sizer.Add(stiff_side_sizer, 0, wx.ALL, 3)
+            self.choice_stiffener_layer_top.SetSelection(0)  # (none)
+        self.choice_stiffener_layer_top.Bind(wx.EVT_CHOICE, self.on_settings_changed)
+        stiff_top_sizer.Add(self.choice_stiffener_layer_top, 0)
+        stiffener_sizer.Add(stiff_top_sizer, 0, wx.ALL, 3)
+
+        # Bottom stiffener layer
+        stiff_bottom_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        stiff_bottom_sizer.Add(wx.StaticText(control_panel, label="Bottom layer:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
+        self.choice_stiffener_layer_bottom = wx.Choice(control_panel, choices=layer_choices_with_none, size=(80, -1))
+        if self.config.stiffener_layer_bottom and self.config.stiffener_layer_bottom in self.available_layers:
+            self.choice_stiffener_layer_bottom.SetSelection(self.available_layers.index(self.config.stiffener_layer_bottom) + 1)
+        else:
+            self.choice_stiffener_layer_bottom.SetSelection(0)  # (none)
+        self.choice_stiffener_layer_bottom.Bind(wx.EVT_CHOICE, self.on_settings_changed)
+        stiff_bottom_sizer.Add(self.choice_stiffener_layer_bottom, 0)
+        stiffener_sizer.Add(stiff_bottom_sizer, 0, wx.ALL, 3)
 
         # Stiffener status label
         self.label_stiffener_status = wx.StaticText(control_panel, label="")
@@ -671,10 +668,22 @@ class FlexViewerFrame(wx.Frame):
             else:
                 stiffeners = extract_stiffeners(self.pcb, self.config)
                 if stiffeners:
-                    self.label_stiffener_status.SetLabel(f"Found {len(stiffeners)} region(s)")
+                    top_count = sum(1 for s in stiffeners if s.side == "top")
+                    bottom_count = sum(1 for s in stiffeners if s.side == "bottom")
+                    parts = []
+                    if top_count > 0:
+                        parts.append(f"{top_count} top")
+                    if bottom_count > 0:
+                        parts.append(f"{bottom_count} bottom")
+                    self.label_stiffener_status.SetLabel(f"Found: {', '.join(parts)}")
                     self.label_stiffener_status.SetForegroundColour(wx.Colour(0, 128, 0))  # Green
                 else:
-                    self.label_stiffener_status.SetLabel(f"No shapes on {self.config.stiffener_layer}")
+                    layers = []
+                    if self.config.stiffener_layer_top:
+                        layers.append(self.config.stiffener_layer_top)
+                    if self.config.stiffener_layer_bottom:
+                        layers.append(self.config.stiffener_layer_bottom)
+                    self.label_stiffener_status.SetLabel(f"No shapes on {', '.join(layers)}")
                     self.label_stiffener_status.SetForegroundColour(wx.Colour(200, 100, 0))  # Orange
         elif self.pcb and self.config.has_stiffener and show_stiffeners:
             stiffeners = extract_stiffeners(self.pcb, self.config)
@@ -717,12 +726,22 @@ class FlexViewerFrame(wx.Frame):
     def on_settings_changed(self, event):
         """Handle PCB settings change."""
         # Update config from UI (flex_thickness is read-only from board settings)
-        layer_idx = self.choice_stiffener_layer.GetSelection()
-        if layer_idx >= 0 and layer_idx < len(self.available_layers):
-            self.config.stiffener_layer = self.available_layers[layer_idx]
+
+        # Top stiffener layer (index 0 = "(none)")
+        top_idx = self.choice_stiffener_layer_top.GetSelection()
+        if top_idx > 0 and (top_idx - 1) < len(self.available_layers):
+            self.config.stiffener_layer_top = self.available_layers[top_idx - 1]
+        else:
+            self.config.stiffener_layer_top = ""
+
+        # Bottom stiffener layer (index 0 = "(none)")
+        bottom_idx = self.choice_stiffener_layer_bottom.GetSelection()
+        if bottom_idx > 0 and (bottom_idx - 1) < len(self.available_layers):
+            self.config.stiffener_layer_bottom = self.available_layers[bottom_idx - 1]
+        else:
+            self.config.stiffener_layer_bottom = ""
 
         self.config.stiffener_thickness = self.spin_stiffener_thickness.GetValue()
-        self.config.stiffener_side = "top" if self.radio_stiff_top.GetValue() else "bottom"
         self.config.bend_subdivisions = self.spin_subdivisions.GetValue()
 
         # Auto-save settings if we have a PCB filepath
