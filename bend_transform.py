@@ -336,7 +336,10 @@ def compute_normal(
         fold_axis_3d = _apply_rotation(rot, (fold.axis[0], fold.axis[1], 0.0))
 
         if classification == "AFTER":
-            fold_rot = _rotation_matrix_around_axis(fold_axis_3d, fold.angle)
+            if not entered_from_back:  
+                fold_rot = _rotation_matrix_around_axis(fold_axis_3d, fold.angle)
+            else:
+                fold_rot = _rotation_matrix_around_axis(fold_axis_3d, -fold.angle)
             rot = _multiply_matrices(fold_rot, rot)
 
         elif classification == "IN_ZONE":
@@ -344,6 +347,10 @@ def compute_normal(
             dy = point[1] - fold.center[1]
             perp_dist = dx * fold.perp[0] + dy * fold.perp[1]
             hw = fold.zone_width / 2
+
+            # For back entry, negate perp_dist to measure from opposite side                                            
+            if entered_from_back:                                                                                       
+                perp_dist = -perp_dist
 
             # Normal depends on geometric position only, NOT entry direction.
             # The normal represents the physical "up" direction of the surface,
@@ -353,6 +360,11 @@ def compute_normal(
 
             arc_fraction = dist_into_zone / fold.zone_width if fold.zone_width > 0 else 0
             theta = arc_fraction * fold.angle
+
+            # For back entry, negate theta to flip normal direction                                                     
+            # (cylinder axis is on opposite side, so outward direction is reversed)                                     
+            if entered_from_back:                                                                                       
+               theta = -theta 
 
             fold_rot = _rotation_matrix_around_axis(fold_axis_3d, theta)
             rot = _multiply_matrices(fold_rot, rot)
