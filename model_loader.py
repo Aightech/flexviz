@@ -230,6 +230,20 @@ KICAD_ENV_VARS = {
     ],
 }
 
+# Additional search paths for user libraries
+# Maps folder names (from relative paths) to actual locations
+USER_3DMODEL_PATHS = {
+    "00_lcsc.3dshapes": [
+        os.path.expanduser("~/KICAD/kicad_libs/easyeda_library/00_lcsc.3dshapes"),
+        os.path.expanduser("~/.local/share/kicad/3rdparty/00_lcsc.3dshapes"),
+    ],
+    "step": [
+        os.path.expanduser("~/KICAD/kicad_libs/custom_kicad_library/step"),
+        os.path.expanduser("~/.local/share/kicad/3rdparty/step"),
+    ],
+    # Add more mappings as needed
+}
+
 
 def expand_kicad_vars(path: str, pcb_dir: str = None, pcb=None) -> Optional[str]:
     """
@@ -249,10 +263,25 @@ def expand_kicad_vars(path: str, pcb_dir: str = None, pcb=None) -> Optional[str]
 
     # Handle relative paths
     if path.startswith("../") or path.startswith("./"):
+        # First try relative to PCB directory
         if pcb_dir:
             resolved = os.path.normpath(os.path.join(pcb_dir, path))
             if os.path.exists(resolved):
                 return resolved
+
+        # Try user library search paths
+        # Extract the folder name from the path (e.g., "00_lcsc.3dshapes" from "../00_lcsc.3dshapes/file.wrl")
+        path_parts = path.replace("\\", "/").split("/")
+        for i, part in enumerate(path_parts):
+            if part in USER_3DMODEL_PATHS:
+                # Get the filename portion after the matched folder
+                filename = "/".join(path_parts[i + 1:])
+                for search_path in USER_3DMODEL_PATHS[part]:
+                    resolved = os.path.join(search_path, filename)
+                    if os.path.exists(resolved):
+                        return resolved
+                break
+
         return None
 
     # Find and expand environment variables
@@ -480,7 +509,11 @@ def parse_wrl_native(path: str) -> Optional[LoadedModel]:
     """
     Parse a VRML 2.0 (.wrl) file natively without external dependencies.
 
-    Handles the common KiCad WRL format with IndexedFaceSet geometry.
+    Handles various WRL formats:
+    - KiCad standard library format
+    - EasyEDA/LCSC library format
+    - Other common VRML 2.0 structures
+
     KiCad WRL files use units where 1 unit = 0.1 inch = 2.54mm,
     so we apply a scale factor to convert to mm.
 
@@ -499,42 +532,51 @@ def parse_wrl_native(path: str) -> Optional[LoadedModel]:
 
         Mesh = _get_mesh_class()
         mesh = Mesh()
-        all_vertices = []
-        all_faces = []
 
-        # Find all IndexedFaceSet blocks
-        # Pattern: coordIndex [...] followed by coord Coordinate { point [...] }
-        ifs_pattern = re.compile(
-            r'IndexedFaceSet\s*\{\s*'
-            r'(?:[^}]*?)'
-            r'coordIndex\s*\[([^\]]+)\]'
-            r'(?:[^}]*?)'
-            r'coord\s+Coordinate\s*\{\s*point\s*\[([^\]]+)\]',
+        # Strategy: Find all coordinate arrays and coordIndex arrays separately,
+        # then pair them up based on their positions in the file
+
+        # Find all point arrays: coord [DEF name] Coordinate { point [ ... ] }
+        # Handles both "coord Coordinate {" and "coord DEF name Coordinate {"
+        point_pattern = re.compile(
+            r'coord\s+(?:DEF\s+\w+\s+)?Coordinate\s*\{\s*point\s*\[\s*([^\]]+)\s*\]',
             re.DOTALL
         )
 
-        # Also try alternate order (coord before coordIndex)
-        ifs_pattern2 = re.compile(
-            r'IndexedFaceSet\s*\{\s*'
-            r'(?:[^}]*?)'
-            r'coord\s+Coordinate\s*\{\s*point\s*\[([^\]]+)\]'
-            r'(?:[^}]*?)'
-            r'coordIndex\s*\[([^\]]+)\]',
+        # Find all coordIndex arrays: coordIndex [ ... ]
+        index_pattern = re.compile(
+            r'coordIndex\s*\[\s*([^\]]+)\s*\]',
             re.DOTALL
         )
 
-        matches = list(ifs_pattern.findall(content))
-        matches2 = list(ifs_pattern2.findall(content))
+        point_matches = list(point_pattern.finditer(content))
+        index_matches = list(index_pattern.finditer(content))
 
-        # Combine matches (swap order for pattern2)
-        all_matches = matches + [(m[1], m[0]) for m in matches2]
+        if not point_matches or not index_matches:
+            return None
 
-        if not all_matches:
+        # Pair point arrays with coordIndex arrays by position
+        # Each IndexedFaceSet has one coord and one coordIndex
+        # We pair them by finding the closest coordIndex after each coord
+        pairs = []
+        for pm in point_matches:
+            # Find the nearest coordIndex after this point array
+            best_im = None
+            best_dist = float('inf')
+            for im in index_matches:
+                dist = im.start() - pm.end()
+                if dist > 0 and dist < best_dist:
+                    best_dist = dist
+                    best_im = im
+            if best_im:
+                pairs.append((pm.group(1), best_im.group(1)))
+
+        if not pairs:
             return None
 
         vertex_offset = 0
 
-        for coord_indices_str, points_str in all_matches:
+        for points_str, coord_indices_str in pairs:
             # Parse vertices: "x y z, x y z, ..."
             vertices = []
             point_parts = re.findall(r'[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?', points_str)
