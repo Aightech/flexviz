@@ -437,13 +437,18 @@ class FlexViewerFrame(wx.Frame):
         # Left panel - 3D view
         self.canvas = GLCanvas(splitter)
 
-        # Right panel - controls
+        # Right panel - controls (two columns)
         control_panel = wx.Panel(splitter)
-        control_sizer = wx.BoxSizer(wx.VERTICAL)
+        control_columns = wx.BoxSizer(wx.HORIZONTAL)
+
+        # Left column - Fold angles
+        left_column = wx.BoxSizer(wx.VERTICAL)
 
         # Fold angle controls
         fold_box = wx.StaticBox(control_panel, label="Fold Angles")
         fold_sizer = wx.StaticBoxSizer(fold_box, wx.VERTICAL)
+        self.fold_panel = control_panel  # Store reference for refresh
+        self.fold_sizer = fold_sizer  # Store reference for refresh
 
         for i, marker in enumerate(self.fold_markers):
             slider = FoldSlider(
@@ -456,50 +461,53 @@ class FlexViewerFrame(wx.Frame):
             fold_sizer.Add(slider, 0, wx.EXPAND | wx.ALL, 5)
 
         if not self.fold_markers:
-            no_folds_label = wx.StaticText(control_panel, label="No fold markers found.\nAdd fold markers on User.1 layer.")
+            no_folds_label = wx.StaticText(control_panel, label="No fold markers found.\nAdd markers on User.1 layer.")
             fold_sizer.Add(no_folds_label, 0, wx.ALL, 10)
 
-        control_sizer.Add(fold_sizer, 0, wx.EXPAND | wx.ALL, 5)
+        left_column.Add(fold_sizer, 0, wx.EXPAND | wx.ALL, 5)
+        control_columns.Add(left_column, 0, wx.EXPAND)
+
+        # Right column - Settings and options
+        right_column = wx.BoxSizer(wx.VERTICAL)
+
+        # Hidden controls (keep as attributes but don't show)
+        self.cb_bend = wx.CheckBox(control_panel, label="Bend")
+        self.cb_bend.SetValue(True)
+        self.cb_bend.Hide()
+
+        self.cb_debug_regions = wx.CheckBox(control_panel, label="Debug Regions")
+        self.cb_debug_regions.SetValue(False)
+        self.cb_debug_regions.Hide()
 
         # Display options
         display_box = wx.StaticBox(control_panel, label="Display Options")
         display_sizer = wx.StaticBoxSizer(display_box, wx.VERTICAL)
 
-        self.cb_bend = wx.CheckBox(control_panel, label="Bend")
-        self.cb_bend.SetValue(True)
-        self.cb_bend.Bind(wx.EVT_CHECKBOX, self.on_display_option_changed)
-        display_sizer.Add(self.cb_bend, 0, wx.ALL, 5)
-
         self.cb_wireframe = wx.CheckBox(control_panel, label="Show Wireframe")
         self.cb_wireframe.Bind(wx.EVT_CHECKBOX, self.on_wireframe_toggle)
-        display_sizer.Add(self.cb_wireframe, 0, wx.ALL, 5)
+        display_sizer.Add(self.cb_wireframe, 0, wx.ALL, 3)
 
         self.cb_traces = wx.CheckBox(control_panel, label="Show Traces")
         self.cb_traces.SetValue(True)
         self.cb_traces.Bind(wx.EVT_CHECKBOX, self.on_display_option_changed)
-        display_sizer.Add(self.cb_traces, 0, wx.ALL, 5)
+        display_sizer.Add(self.cb_traces, 0, wx.ALL, 3)
 
         self.cb_pads = wx.CheckBox(control_panel, label="Show Pads")
         self.cb_pads.SetValue(True)
         self.cb_pads.Bind(wx.EVT_CHECKBOX, self.on_display_option_changed)
-        display_sizer.Add(self.cb_pads, 0, wx.ALL, 5)
+        display_sizer.Add(self.cb_pads, 0, wx.ALL, 3)
 
         self.cb_components = wx.CheckBox(control_panel, label="Show Components")
         self.cb_components.SetValue(False)
         self.cb_components.Bind(wx.EVT_CHECKBOX, self.on_display_option_changed)
-        display_sizer.Add(self.cb_components, 0, wx.ALL, 5)
+        display_sizer.Add(self.cb_components, 0, wx.ALL, 3)
 
         self.cb_stiffeners = wx.CheckBox(control_panel, label="Show Stiffeners")
         self.cb_stiffeners.SetValue(True)
         self.cb_stiffeners.Bind(wx.EVT_CHECKBOX, self.on_display_option_changed)
-        display_sizer.Add(self.cb_stiffeners, 0, wx.ALL, 5)
+        display_sizer.Add(self.cb_stiffeners, 0, wx.ALL, 3)
 
-        self.cb_debug_regions = wx.CheckBox(control_panel, label="Debug Regions")
-        self.cb_debug_regions.SetValue(False)
-        self.cb_debug_regions.Bind(wx.EVT_CHECKBOX, self.on_display_option_changed)
-        display_sizer.Add(self.cb_debug_regions, 0, wx.ALL, 5)
-
-        control_sizer.Add(display_sizer, 0, wx.EXPAND | wx.ALL, 5)
+        right_column.Add(display_sizer, 0, wx.EXPAND | wx.ALL, 5)
 
         # PCB Settings
         settings_box = wx.StaticBox(control_panel, label="PCB Settings")
@@ -527,7 +535,7 @@ class FlexViewerFrame(wx.Frame):
         subdiv_sizer.Add(wx.StaticText(control_panel, label="strips"), 0, wx.ALIGN_CENTER_VERTICAL)
         settings_sizer.Add(subdiv_sizer, 0, wx.ALL, 3)
 
-        control_sizer.Add(settings_sizer, 0, wx.EXPAND | wx.ALL, 5)
+        right_column.Add(settings_sizer, 0, wx.EXPAND | wx.ALL, 5)
 
         # Stiffener Settings
         stiffener_box = wx.StaticBox(control_panel, label="Stiffener")
@@ -580,55 +588,57 @@ class FlexViewerFrame(wx.Frame):
         self.label_stiffener_status.SetForegroundColour(wx.Colour(128, 128, 128))
         stiffener_sizer.Add(self.label_stiffener_status, 0, wx.LEFT | wx.BOTTOM, 5)
 
-        control_sizer.Add(stiffener_sizer, 0, wx.EXPAND | wx.ALL, 5)
-
-        # Save settings button
-        btn_save_settings = wx.Button(control_panel, label="Save Settings")
-        btn_save_settings.Bind(wx.EVT_BUTTON, self.on_save_settings)
-        control_sizer.Add(btn_save_settings, 0, wx.ALL | wx.EXPAND, 5)
+        right_column.Add(stiffener_sizer, 0, wx.EXPAND | wx.ALL, 5)
 
         # Buttons
         btn_sizer = wx.BoxSizer(wx.HORIZONTAL)
 
         btn_refresh = wx.Button(control_panel, label="Refresh")
         btn_refresh.Bind(wx.EVT_BUTTON, self.on_refresh)
-        btn_sizer.Add(btn_refresh, 1, wx.ALL, 5)
+        btn_sizer.Add(btn_refresh, 1, wx.ALL, 3)
 
         btn_reset = wx.Button(control_panel, label="Reset View")
         btn_reset.Bind(wx.EVT_BUTTON, self.on_reset_view)
-        btn_sizer.Add(btn_reset, 1, wx.ALL, 5)
+        btn_sizer.Add(btn_reset, 1, wx.ALL, 3)
 
-        control_sizer.Add(btn_sizer, 0, wx.EXPAND)
+        right_column.Add(btn_sizer, 0, wx.EXPAND | wx.ALL, 2)
 
         # Export buttons
         export_sizer = wx.BoxSizer(wx.HORIZONTAL)
 
         btn_export_obj = wx.Button(control_panel, label="Export OBJ")
         btn_export_obj.Bind(wx.EVT_BUTTON, self.on_export_obj)
-        export_sizer.Add(btn_export_obj, 1, wx.ALL, 5)
+        export_sizer.Add(btn_export_obj, 1, wx.ALL, 3)
 
         btn_export_stl = wx.Button(control_panel, label="Export STL")
         btn_export_stl.Bind(wx.EVT_BUTTON, self.on_export_stl)
-        export_sizer.Add(btn_export_stl, 1, wx.ALL, 5)
+        export_sizer.Add(btn_export_stl, 1, wx.ALL, 3)
 
-        control_sizer.Add(export_sizer, 0, wx.EXPAND)
+        right_column.Add(export_sizer, 0, wx.EXPAND | wx.ALL, 2)
+
+        # Save settings button
+        btn_save_settings = wx.Button(control_panel, label="Save Settings")
+        btn_save_settings.Bind(wx.EVT_BUTTON, self.on_save_settings)
+        right_column.Add(btn_save_settings, 0, wx.ALL | wx.EXPAND, 5)
 
         # Help text
         help_text = wx.StaticText(control_panel, label=(
-            "\nControls:\n"
+            "Controls:\n"
             "  Left drag: Rotate\n"
             "  Middle drag: Pan\n"
-            "  Right drag: Zoom\n"
             "  Scroll: Zoom"
         ))
-        control_sizer.Add(help_text, 0, wx.ALL, 10)
+        right_column.Add(help_text, 0, wx.ALL, 5)
 
-        control_panel.SetSizer(control_sizer)
+        # Add right column to control_columns
+        control_columns.Add(right_column, 1, wx.EXPAND)
+
+        control_panel.SetSizer(control_columns)
 
         # Set up splitter
         splitter.SplitVertically(self.canvas, control_panel)
-        splitter.SetSashPosition(800)
-        splitter.SetMinimumPaneSize(250)
+        splitter.SetSashPosition(700)
+        splitter.SetMinimumPaneSize(350)
 
     def update_mesh(self):
         """Regenerate mesh with current fold angles."""
