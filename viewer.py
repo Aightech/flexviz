@@ -375,6 +375,11 @@ class FoldSlider(wx.Panel):
         """Get current angle in degrees."""
         return float(self.slider.GetValue())
 
+    def set_angle(self, angle: float):
+        """Set angle in degrees."""
+        self.slider.SetValue(int(angle))
+        self.text.SetValue(f"{angle:.1f}")
+
 
 class FlexViewerFrame(wx.Frame):
     """Main viewer window."""
