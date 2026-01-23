@@ -398,7 +398,7 @@ jobs:
 | **Phase 5** | Error Handling, Performance | Stress testing, edge cases | 🔄 In Progress |
 | **Phase 6** | Documentation, Release | Final review | ⏳ Pending |
 | **Phase 7** | Validation & Warnings | Design rule checks | ✅ Complete |
-| **Phase 8** | Visual Enhancements | Extended rendering | ⏳ Pending |
+| **Phase 8** | Visual Enhancements | Extended rendering | 🔄 In Progress |
 | **Phase 9** | Export & Animation | STEP, GLB animation | ⏳ Pending |
 | **Phase 10** | Release Preparation | KiCad integration review | ⏳ Pending |
 
@@ -471,10 +471,11 @@ Each phase builds on the previous. Complete all unit tests before moving to the 
 - [x] Resolve relative paths from PCB directory
 - [x] Model3DGeometry dataclass in geometry.py
 - [x] model_loader.py with path resolution and transform utilities
-- [ ] STEP file loading (requires trimesh with cascadio or OCC)
-- [ ] WRL file loading (requires trimesh)
-- [ ] Integrate loaded models into mesh generation
-- [ ] Add "Show 3D Models" checkbox (default: placeholder boxes)
+- [x] Graceful degradation: OCC → trimesh → native WRL parser
+- [x] Native WRL/VRML parser (no dependencies, always available)
+- [x] WRL fallback when STEP file requested (KiCad provides both formats)
+- [x] Integrate loaded models into mesh generation with bend transforms
+- [x] Add "Show 3D Models" checkbox in viewer UI
 
 **Unit Tests:**
 - [ ] Test drill hole extraction
@@ -583,7 +584,14 @@ Each phase builds on the previous. Complete all unit tests before moving to the 
 
 ## Recent Updates
 
-**2026-01-23**: Phase 8 - Visual Enhancements (partial)
+**2026-01-23**: Phase 8 - Visual Enhancements (continued)
+- **3D Model Loading Complete**:
+  - Graceful degradation strategy: OCC → trimesh → native WRL parser
+  - Native VRML/WRL parser (no dependencies, handles KiCad's WRL files)
+  - Automatic WRL fallback when STEP requested (KiCad provides both formats)
+  - `create_component_3d_model_mesh()` in mesh.py with full bend transform support
+  - "Show 3D Models" checkbox in viewer UI
+  - Models follow component position, rotation, and bend deformation
 - **Drill holes as cutouts**: `DrillHole` dataclass, `get_drill_holes()` method extracts from thru_hole/np_thru_hole pads
 - Drill holes automatically rendered as board cutouts (through the PCB)
 - **3D Model infrastructure**:
@@ -592,7 +600,6 @@ Each phase builds on the previous. Complete all unit tests before moving to the 
   - `model_loader.py` with KiCad environment variable expansion
   - Path resolution for `${KICAD9_3DMODEL_DIR}`, relative paths, etc.
   - Transform utilities for component positioning
-  - Trimesh-based loading ready (needs `pip install trimesh`)
 
 **2026-01-23**: Phase 7 - Validation & Warnings
 - New `validation.py` module with design rule checks
