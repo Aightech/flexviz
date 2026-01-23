@@ -533,56 +533,53 @@ def parse_wrl_native(path: str) -> Optional[LoadedModel]:
         Mesh = _get_mesh_class()
         mesh = Mesh()
 
-        # Strategy: Find all coordinate arrays and coordIndex arrays separately,
-        # then pair them up based on their positions in the file
+        # Strategy: Find IndexedFaceSet blocks and parse coord/coordIndex within each
+        # This ensures correct pairing even when coord/coordIndex order varies
 
-        # Find all point arrays: coord [DEF name] Coordinate { point [ ... ] }
-        # Handles both "coord Coordinate {" and "coord DEF name Coordinate {"
-        point_pattern = re.compile(
-            r'coord\s+(?:DEF\s+\w+\s+)?Coordinate\s*\{\s*point\s*\[\s*([^\]]+)\s*\]',
-            re.DOTALL
-        )
+        # Pattern to find IndexedFaceSet blocks (captures the entire block content)
+        # Matches: IndexedFaceSet { ... } with proper brace matching
+        ifs_blocks = []
+        ifs_pattern = re.compile(r'IndexedFaceSet\s*\{', re.IGNORECASE)
 
-        # Find all coordIndex arrays: coordIndex [ ... ]
-        index_pattern = re.compile(
-            r'coordIndex\s*\[\s*([^\]]+)\s*\]',
-            re.DOTALL
-        )
+        for m in ifs_pattern.finditer(content):
+            start = m.end()
+            # Find matching closing brace
+            depth = 1
+            pos = start
+            while pos < len(content) and depth > 0:
+                if content[pos] == '{':
+                    depth += 1
+                elif content[pos] == '}':
+                    depth -= 1
+                pos += 1
+            if depth == 0:
+                ifs_blocks.append(content[start:pos - 1])
 
-        point_matches = list(point_pattern.finditer(content))
-        index_matches = list(index_pattern.finditer(content))
-
-        if not point_matches or not index_matches:
-            return None
-
-        # Pair point arrays with coordIndex arrays by position
-        # Each IndexedFaceSet has one coord and one coordIndex
-        # They can appear in either order, so find the closest match
-        pairs = []
-        used_indices = set()
-
-        for pm in point_matches:
-            # Find the nearest coordIndex (before or after) this point array
-            best_im = None
-            best_dist = float('inf')
-            for im in index_matches:
-                if im.start() in used_indices:
-                    continue
-                # Distance can be negative (index before point) or positive (index after)
-                dist = abs(im.start() - pm.end())
-                if dist < best_dist:
-                    best_dist = dist
-                    best_im = im
-            if best_im:
-                pairs.append((pm.group(1), best_im.group(1)))
-                used_indices.add(best_im.start())
-
-        if not pairs:
-            return None
+        if not ifs_blocks:
+            # Fallback: try legacy approach for files without explicit IndexedFaceSet
+            return _parse_wrl_legacy(content, WRL_SCALE, path)
 
         vertex_offset = 0
 
-        for points_str, coord_indices_str in pairs:
+        for block in ifs_blocks:
+            # Find coord block within this IndexedFaceSet
+            # Handles both "coord Coordinate {" and "coord DEF name Coordinate {"
+            coord_pattern = re.compile(
+                r'coord\s+(?:DEF\s+\w+\s+)?Coordinate\s*\{\s*point\s*\[\s*([^\]]+)\s*\]',
+                re.DOTALL
+            )
+            coord_match = coord_pattern.search(block)
+
+            # Find coordIndex within this IndexedFaceSet
+            index_pattern = re.compile(r'coordIndex\s*\[\s*([^\]]+)\s*\]', re.DOTALL)
+            index_match = index_pattern.search(block)
+
+            if not coord_match or not index_match:
+                continue
+
+            points_str = coord_match.group(1)
+            coord_indices_str = index_match.group(1)
+
             # Parse vertices: "x y z, x y z, ..."
             vertices = []
             point_parts = re.findall(r'[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?', points_str)
@@ -603,16 +600,19 @@ def parse_wrl_native(path: str) -> Optional[LoadedModel]:
                 if idx == -1:
                     # End of face
                     if len(current_face) >= 3:
-                        # Adjust indices with offset
-                        adjusted = [i + vertex_offset for i in current_face]
-                        if len(adjusted) == 3:
-                            mesh.add_triangle(adjusted[0], adjusted[1], adjusted[2], (180, 180, 180))
-                        elif len(adjusted) == 4:
-                            mesh.add_quad(adjusted[0], adjusted[1], adjusted[2], adjusted[3], (180, 180, 180))
-                        else:
-                            # Fan triangulation for polygons
-                            for i in range(1, len(adjusted) - 1):
-                                mesh.add_triangle(adjusted[0], adjusted[i], adjusted[i + 1], (180, 180, 180))
+                        # Validate indices before adding
+                        max_idx = len(vertices) - 1
+                        if all(0 <= i <= max_idx for i in current_face):
+                            # Adjust indices with offset
+                            adjusted = [i + vertex_offset for i in current_face]
+                            if len(adjusted) == 3:
+                                mesh.add_triangle(adjusted[0], adjusted[1], adjusted[2], (180, 180, 180))
+                            elif len(adjusted) == 4:
+                                mesh.add_quad(adjusted[0], adjusted[1], adjusted[2], adjusted[3], (180, 180, 180))
+                            else:
+                                # Fan triangulation for polygons
+                                for i in range(1, len(adjusted) - 1):
+                                    mesh.add_triangle(adjusted[0], adjusted[i], adjusted[i + 1], (180, 180, 180))
                     current_face = []
                 else:
                     current_face.append(idx)
@@ -638,6 +638,95 @@ def parse_wrl_native(path: str) -> Optional[LoadedModel]:
     except Exception as e:
         print(f"Native WRL parser failed for {path}: {e}")
         return None
+
+
+def _parse_wrl_legacy(content: str, wrl_scale: float, path: str = "unknown") -> Optional[LoadedModel]:
+    """
+    Legacy WRL parsing for files without explicit IndexedFaceSet blocks.
+
+    Uses position-based pairing as fallback.
+    """
+    Mesh = _get_mesh_class()
+    mesh = Mesh()
+
+    # Find all point arrays and coordIndex arrays
+    point_pattern = re.compile(
+        r'coord\s+(?:DEF\s+\w+\s+)?Coordinate\s*\{\s*point\s*\[\s*([^\]]+)\s*\]',
+        re.DOTALL
+    )
+    index_pattern = re.compile(r'coordIndex\s*\[\s*([^\]]+)\s*\]', re.DOTALL)
+
+    point_matches = list(point_pattern.finditer(content))
+    index_matches = list(index_pattern.finditer(content))
+
+    if not point_matches or not index_matches:
+        return None
+
+    # Pair by order: first coord with first coordIndex, etc.
+    # Sort both by position to handle any ordering
+    point_matches.sort(key=lambda m: m.start())
+    index_matches.sort(key=lambda m: m.start())
+
+    # Create pairs - match by position in file
+    pairs = []
+    for i in range(min(len(point_matches), len(index_matches))):
+        pairs.append((point_matches[i].group(1), index_matches[i].group(1)))
+
+    if not pairs:
+        return None
+
+    vertex_offset = 0
+
+    for points_str, coord_indices_str in pairs:
+        # Parse vertices
+        vertices = []
+        point_parts = re.findall(r'[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?', points_str)
+
+        for i in range(0, len(point_parts) - 2, 3):
+            x = float(point_parts[i]) * wrl_scale
+            y = float(point_parts[i + 1]) * wrl_scale
+            z = float(point_parts[i + 2]) * wrl_scale
+            vertices.append((x, y, z))
+            mesh.add_vertex((x, y, z))
+
+        # Parse face indices
+        index_parts = re.findall(r'-?\d+', coord_indices_str)
+        current_face = []
+
+        for idx_str in index_parts:
+            idx = int(idx_str)
+            if idx == -1:
+                if len(current_face) >= 3:
+                    max_idx = len(vertices) - 1
+                    if all(0 <= i <= max_idx for i in current_face):
+                        adjusted = [i + vertex_offset for i in current_face]
+                        if len(adjusted) == 3:
+                            mesh.add_triangle(adjusted[0], adjusted[1], adjusted[2], (180, 180, 180))
+                        elif len(adjusted) == 4:
+                            mesh.add_quad(adjusted[0], adjusted[1], adjusted[2], adjusted[3], (180, 180, 180))
+                        else:
+                            for i in range(1, len(adjusted) - 1):
+                                mesh.add_triangle(adjusted[0], adjusted[i], adjusted[i + 1], (180, 180, 180))
+                current_face = []
+            else:
+                current_face.append(idx)
+
+        vertex_offset += len(vertices)
+
+    if not mesh.vertices:
+        return None
+
+    xs = [v[0] for v in mesh.vertices]
+    ys = [v[1] for v in mesh.vertices]
+    zs = [v[2] for v in mesh.vertices]
+
+    return LoadedModel(
+        mesh=mesh,
+        source_path=path,
+        loader_used='native_wrl',
+        min_point=(min(xs), min(ys), min(zs)),
+        max_point=(max(xs), max(ys), max(zs))
+    )
 
 
 # =============================================================================

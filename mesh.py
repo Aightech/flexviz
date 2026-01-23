@@ -1027,6 +1027,9 @@ def create_pad_mesh(
     """
     Create a 3D mesh for a pad.
 
+    For through-hole pads with drill holes, creates an annular ring.
+    For SMD pads (no drill), creates a solid pad.
+
     Args:
         pad: Pad geometry
         z_offset: Z offset for the pad (along surface normal)
@@ -1041,49 +1044,118 @@ def create_pad_mesh(
     # Convert pad to polygon
     poly = pad_to_polygon(pad)
 
-    # Find which region the pad center is in
-    pad_center = pad.center
+    # Find which region the pad is in
+    # For annular pads with drill holes, the center may be in a cutout,
+    # so try the pad vertices if the center doesn't work
     region_recipe = []
 
     if regions:
-        containing_region = find_containing_region(pad_center, regions)
+        # First try the pad center
+        containing_region = find_containing_region(pad.center, regions)
+
+        # If center is in a cutout (drill hole), try pad polygon vertices
+        if not containing_region and poly.vertices:
+            for v in poly.vertices:
+                containing_region = find_containing_region((v[0], v[1]), regions)
+                if containing_region:
+                    break
+
         if containing_region:
             region_recipe = get_region_recipe(containing_region)
 
     # Determine if pad is on back layer
     is_back_layer = pad.layer == "B.Cu"
 
-    # Transform vertices and offset along surface normal
-    vertices_3d = []
-    for v in poly.vertices:
+    # Calculate z offset based on layer
+    if is_back_layer:
+        total_offset = -(pcb_thickness + z_offset)
+    else:
+        total_offset = z_offset
+
+    # Get 2D vertices for outer pad
+    outer_2d = [(v[0], v[1]) for v in poly.vertices]
+
+    # Check if this pad has a drill hole
+    has_drill = pad.drill > 0
+    hole_2d = []
+
+    if has_drill:
+        # Create circular hole at pad center
+        cx, cy = pad.center
+        r = pad.drill / 2
+        n_hole = 12  # Number of vertices for hole circle
+        for i in range(n_hole):
+            theta = 2 * math.pi * i / n_hole
+            hole_2d.append((cx + r * math.cos(theta), cy + r * math.sin(theta)))
+
+    # Transform outer vertices to 3D
+    outer_3d = []
+    outer_indices = []
+    for v in outer_2d:
         v3d, normal = transform_point_and_normal(v, region_recipe)
-
-        if is_back_layer:
-            # Back layer: offset from bottom surface (negative normal direction)
-            # First go to bottom surface, then offset slightly more
-            total_offset = -(pcb_thickness + z_offset)
-        else:
-            # Front layer: offset from top surface (positive normal direction)
-            total_offset = z_offset
-
-        vertices_3d.append((
+        v3d_offset = (
             v3d[0] + normal[0] * total_offset,
             v3d[1] + normal[1] * total_offset,
             v3d[2] + normal[2] * total_offset
-        ))
+        )
+        outer_3d.append(v3d_offset)
+        outer_indices.append(mesh.add_vertex(v3d_offset))
 
-    # Add vertices
-    indices = [mesh.add_vertex(v) for v in vertices_3d]
+    if has_drill and hole_2d:
+        # Transform hole vertices to 3D
+        hole_3d = []
+        hole_indices = []
+        for v in hole_2d:
+            v3d, normal = transform_point_and_normal(v, region_recipe)
+            v3d_offset = (
+                v3d[0] + normal[0] * total_offset,
+                v3d[1] + normal[1] * total_offset,
+                v3d[2] + normal[2] * total_offset
+            )
+            hole_3d.append(v3d_offset)
+            hole_indices.append(mesh.add_vertex(v3d_offset))
 
-    # Create face (fan triangulation)
-    # Reverse winding for back layer so normals face outward
-    n = len(indices)
-    if is_back_layer:
-        for i in range(1, n - 1):
-            mesh.add_triangle(indices[0], indices[i + 1], indices[i], COLOR_PAD)
+        # Triangulate with hole
+        triangles, merged = triangulate_with_holes(outer_2d, [hole_2d])
+
+        # Build mapping from 2D vertices to mesh indices
+        all_2d = list(outer_2d) + list(hole_2d)
+        all_indices = list(outer_indices) + list(hole_indices)
+
+        # Map merged polygon vertices to mesh indices
+        merged_indices = []
+        for v2d in merged:
+            found = False
+            for i, av in enumerate(all_2d):
+                if abs(av[0] - v2d[0]) < 0.001 and abs(av[1] - v2d[1]) < 0.001:
+                    merged_indices.append(all_indices[i])
+                    found = True
+                    break
+            if not found:
+                # Fallback: transform and add
+                v3d, normal = transform_point_and_normal(v2d, region_recipe)
+                v3d_offset = (
+                    v3d[0] + normal[0] * total_offset,
+                    v3d[1] + normal[1] * total_offset,
+                    v3d[2] + normal[2] * total_offset
+                )
+                merged_indices.append(mesh.add_vertex(v3d_offset))
+
+        # Add triangles
+        for tri in triangles:
+            if is_back_layer:
+                mesh.add_triangle(merged_indices[tri[0]], merged_indices[tri[2]], merged_indices[tri[1]], COLOR_PAD)
+            else:
+                mesh.add_triangle(merged_indices[tri[0]], merged_indices[tri[1]], merged_indices[tri[2]], COLOR_PAD)
     else:
-        for i in range(1, n - 1):
-            mesh.add_triangle(indices[0], indices[i], indices[i + 1], COLOR_PAD)
+        # No drill hole - simple fan triangulation
+        n = len(outer_indices)
+        if is_back_layer:
+            for i in range(1, n - 1):
+                mesh.add_triangle(outer_indices[0], outer_indices[i + 1], outer_indices[i], COLOR_PAD)
+        else:
+            for i in range(1, n - 1):
+                mesh.add_triangle(outer_indices[0], outer_indices[i], outer_indices[i + 1], COLOR_PAD)
 
     return mesh
 
@@ -1111,12 +1183,19 @@ def create_component_mesh(
     # Get bounding box polygon
     box = component_to_box(component)
 
-    # Find which region the component center is in
-    comp_center = component.center
+    # Find which region the component is in
+    # Try center first, then box corners if center is in a cutout
     region_recipe = []
 
     if regions:
-        containing_region = find_containing_region(comp_center, regions)
+        containing_region = find_containing_region(component.center, regions)
+
+        if not containing_region and box.vertices:
+            for v in box.vertices:
+                containing_region = find_containing_region((v[0], v[1]), regions)
+                if containing_region:
+                    break
+
         if containing_region:
             region_recipe = get_region_recipe(containing_region)
 
@@ -1424,10 +1503,21 @@ def create_component_3d_model_mesh(
     if not hasattr(component, 'models') or not component.models:
         return mesh
 
-    # Find which region the component center is in
+    # Find which region the component is in
+    # Try center first, then bounding box corners if center is in a cutout
     region_recipe = []
     if regions:
         containing_region = find_containing_region(component.center, regions)
+
+        # If center is in a cutout, try bounding box corners
+        if not containing_region:
+            box = component_to_box(component)
+            if box.vertices:
+                for v in box.vertices:
+                    containing_region = find_containing_region((v[0], v[1]), regions)
+                    if containing_region:
+                        break
+
         if containing_region:
             region_recipe = get_region_recipe(containing_region)
 

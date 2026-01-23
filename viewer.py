@@ -77,13 +77,19 @@ class GLCanvas(glcanvas.GLCanvas):
         glEnable(GL_DEPTH_TEST)
         glEnable(GL_LIGHTING)
         glEnable(GL_LIGHT0)
+        glEnable(GL_LIGHT1)  # Second fill light
         glEnable(GL_COLOR_MATERIAL)
         glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE)
 
-        # Light position
+        # Main light (from upper-right-front)
         glLightfv(GL_LIGHT0, GL_POSITION, [1.0, 1.0, 1.0, 0.0])
         glLightfv(GL_LIGHT0, GL_AMBIENT, [0.3, 0.3, 0.3, 1.0])
-        glLightfv(GL_LIGHT0, GL_DIFFUSE, [0.8, 0.8, 0.8, 1.0])
+        glLightfv(GL_LIGHT0, GL_DIFFUSE, [0.7, 0.7, 0.7, 1.0])
+
+        # Fill light (from lower-left-back) - softer to avoid over-brightness
+        glLightfv(GL_LIGHT1, GL_POSITION, [-1.0, -1.0, -0.5, 0.0])
+        glLightfv(GL_LIGHT1, GL_AMBIENT, [0.0, 0.0, 0.0, 1.0])
+        glLightfv(GL_LIGHT1, GL_DIFFUSE, [0.4, 0.4, 0.4, 1.0])
 
         # Enable two-sided lighting for 3D models with inconsistent face winding
         glLightModeli(GL_LIGHT_MODEL_TWO_SIDE, GL_TRUE)
