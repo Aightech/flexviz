@@ -57,6 +57,13 @@ def transform_point(
     The recipe determines exactly how each fold affects this point.
     No geometric classification is performed - we trust the recipe.
 
+    For multiple folds, we track both the cumulative rotation AND translation
+    (affine transformation) through each fold.
+
+    Key insight: The perpendicular distance from a fold to a point is preserved
+    through previous bends (isometric transformation), so we use ORIGINAL 2D
+    coordinates to compute along/perp_dist, but track the 3D origin correctly.
+
     Args:
         point: 2D point (x, y)
         recipe: List of (FoldDefinition, classification) tuples
@@ -67,32 +74,37 @@ def transform_point(
     if not recipe:
         return (point[0], point[1], 0.0)
 
-    # Current 3D position and coordinate frame
-    pos = [point[0], point[1], 0.0]
-
-    # Track cumulative rotation for chaining folds
-    rot = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]  # Identity
+    # Track cumulative affine transformation: rot (rotation) and origin (translation)
+    # A point p transforms as: rot @ p + origin
+    rot = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]  # Identity rotation
+    origin = (0.0, 0.0, 0.0)  # No translation initially
 
     for fold, classification in recipe:
-        # Project point onto fold's coordinate system
+        hw = fold.zone_width / 2
+        R = fold.radius
+
+        # Use ORIGINAL 2D coordinates to compute distances (preserved through bending)
         dx = point[0] - fold.center[0]
         dy = point[1] - fold.center[1]
-
-        # Distance along fold axis (preserved)
         along = dx * fold.axis[0] + dy * fold.axis[1]
-
-        # Distance perpendicular to fold axis
         perp_dist = dx * fold.perp[0] + dy * fold.perp[1]
 
-        # Half-width of bend zone
-        hw = fold.zone_width / 2
+        # Transform fold's local coordinate frame through cumulative rotation
+        fold_axis_3d = _apply_rotation(rot, (fold.axis[0], fold.axis[1], 0.0))
+        fold_perp_3d = _apply_rotation(rot, (fold.perp[0], fold.perp[1], 0.0))
+        up_3d = _apply_rotation(rot, (0.0, 0.0, 1.0))
+
+        # Compute fold center in 3D using the affine transformation
+        fold_center_3d = (
+            rot[0][0] * fold.center[0] + rot[0][1] * fold.center[1] + origin[0],
+            rot[1][0] * fold.center[0] + rot[1][1] * fold.center[1] + origin[1],
+            rot[2][0] * fold.center[0] + rot[2][1] * fold.center[1] + origin[2]
+        )
 
         if classification == "AFTER":
-            # Point is after this fold - apply full rotation
-            R = fold.radius
+            # Point is after this fold - compute position after full bend
 
             if abs(fold.angle) < 1e-9:
-                # No bend - straight through
                 arc_end_perp = fold.zone_width
                 arc_end_up = 0.0
             else:
@@ -101,43 +113,63 @@ def transform_point(
                 if fold.angle < 0:
                     arc_end_up = -arc_end_up
 
-            # Distance beyond the zone
+            # Distance beyond the zone (using original 2D perp_dist)
             dist_from_start = perp_dist + hw
-            beyond = dist_from_start - fold.zone_width
-            if beyond < 0:
-                beyond = 0
+            beyond = max(0, dist_from_start - fold.zone_width)
 
-            # Direction after bend (rotated by fold angle)
+            # Direction after bend
             cos_a = math.cos(fold.angle)
             sin_a = math.sin(fold.angle)
 
-            # Position in fold's local system
+            # Local position relative to fold center
             local_perp = arc_end_perp + beyond * cos_a - hw
             local_up = arc_end_up + beyond * sin_a
 
-            # Transform to 3D with current rotation
-            base_x = fold.center[0] + along * fold.axis[0] + local_perp * fold.perp[0]
-            base_y = fold.center[1] + along * fold.axis[1] + local_perp * fold.perp[1]
-            base_z = local_up
-
-            pos = _apply_rotation(rot, (base_x, base_y, base_z))
-
-            # Update rotation for subsequent folds
-            fold_rot = _rotation_matrix_around_axis(
-                (fold.axis[0], fold.axis[1], 0),
-                fold.angle
+            # Final 3D position
+            pos_3d = (
+                fold_center_3d[0] + along * fold_axis_3d[0] + local_perp * fold_perp_3d[0] + local_up * up_3d[0],
+                fold_center_3d[1] + along * fold_axis_3d[1] + local_perp * fold_perp_3d[1] + local_up * up_3d[1],
+                fold_center_3d[2] + along * fold_axis_3d[2] + local_perp * fold_perp_3d[2] + local_up * up_3d[2]
             )
-            rot = _multiply_matrices(fold_rot, rot)
+
+            # Update cumulative affine transformation for subsequent folds
+            # New rotation: fold_rot @ rot
+            fold_rot = _rotation_matrix_around_axis(fold_axis_3d, fold.angle)
+            new_rot = _multiply_matrices(fold_rot, rot)
+
+            # New origin: compute using zone boundary reference point
+            # We need: rot @ P + origin = correct_3d_position for any point P after the fold
+            # Use zone_end (at perp_dist = hw from fold center) as reference
+            zone_end_2d = (
+                fold.center[0] + hw * fold.perp[0],
+                fold.center[1] + hw * fold.perp[1]
+            )
+            # Zone end in 3D is at the arc boundary (beyond = 0)
+            zone_end_3d = (
+                fold_center_3d[0] + (arc_end_perp - hw) * fold_perp_3d[0] + arc_end_up * up_3d[0],
+                fold_center_3d[1] + (arc_end_perp - hw) * fold_perp_3d[1] + arc_end_up * up_3d[1],
+                fold_center_3d[2] + (arc_end_perp - hw) * fold_perp_3d[2] + arc_end_up * up_3d[2]
+            )
+            # Compute what new_rot @ zone_end_2d would give
+            rotated_zone_end = (
+                new_rot[0][0] * zone_end_2d[0] + new_rot[0][1] * zone_end_2d[1],
+                new_rot[1][0] * zone_end_2d[0] + new_rot[1][1] * zone_end_2d[1],
+                new_rot[2][0] * zone_end_2d[0] + new_rot[2][1] * zone_end_2d[1]
+            )
+            # origin = zone_end_3d - rotated_zone_end
+            origin = (
+                zone_end_3d[0] - rotated_zone_end[0],
+                zone_end_3d[1] - rotated_zone_end[1],
+                zone_end_3d[2] - rotated_zone_end[2]
+            )
+            rot = new_rot
 
         elif classification == "IN_ZONE":
             # Point is in the bend zone - map to cylindrical arc
-            dist_into_zone = perp_dist + hw
-            dist_into_zone = max(0, min(dist_into_zone, fold.zone_width))
+            dist_into_zone = max(0, min(perp_dist + hw, fold.zone_width))
 
             arc_fraction = dist_into_zone / fold.zone_width if fold.zone_width > 0 else 0
             theta = arc_fraction * fold.angle
-
-            R = fold.radius
 
             if abs(fold.angle) < 1e-9:
                 local_perp = dist_into_zone - hw
@@ -148,14 +180,14 @@ def transform_point(
                 if fold.angle < 0:
                     local_up = -local_up
 
-            base_x = fold.center[0] + along * fold.axis[0] + local_perp * fold.perp[0]
-            base_y = fold.center[1] + along * fold.axis[1] + local_perp * fold.perp[1]
-            base_z = local_up
+            pos_3d = (
+                fold_center_3d[0] + along * fold_axis_3d[0] + local_perp * fold_perp_3d[0] + local_up * up_3d[0],
+                fold_center_3d[1] + along * fold_axis_3d[1] + local_perp * fold_perp_3d[1] + local_up * up_3d[1],
+                fold_center_3d[2] + along * fold_axis_3d[2] + local_perp * fold_perp_3d[2] + local_up * up_3d[2]
+            )
+            return pos_3d  # IN_ZONE is terminal
 
-            pos = _apply_rotation(rot, (base_x, base_y, base_z))
-            break  # IN_ZONE is terminal
-
-    return (pos[0], pos[1], pos[2])
+    return pos_3d
 
 
 def compute_normal(
@@ -178,11 +210,11 @@ def compute_normal(
     rot = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
 
     for fold, classification in recipe:
+        # Transform fold axis through cumulative rotation
+        fold_axis_3d = _apply_rotation(rot, (fold.axis[0], fold.axis[1], 0.0))
+
         if classification == "AFTER":
-            fold_rot = _rotation_matrix_around_axis(
-                (fold.axis[0], fold.axis[1], 0),
-                fold.angle
-            )
+            fold_rot = _rotation_matrix_around_axis(fold_axis_3d, fold.angle)
             rot = _multiply_matrices(fold_rot, rot)
 
         elif classification == "IN_ZONE":
@@ -197,10 +229,7 @@ def compute_normal(
             arc_fraction = dist_into_zone / fold.zone_width if fold.zone_width > 0 else 0
             theta = arc_fraction * fold.angle
 
-            fold_rot = _rotation_matrix_around_axis(
-                (fold.axis[0], fold.axis[1], 0),
-                theta
-            )
+            fold_rot = _rotation_matrix_around_axis(fold_axis_3d, theta)
             rot = _multiply_matrices(fold_rot, rot)
             break
 

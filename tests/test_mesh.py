@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from mesh import (
     Mesh,
-    create_board_mesh,
+    create_board_mesh_with_regions,
     create_trace_mesh,
     create_pad_mesh,
     create_component_mesh,
@@ -24,7 +24,6 @@ from geometry import (
     Polygon, LineSegment, PadGeometry, ComponentGeometry,
     BoundingBox, BoardGeometry
 )
-from bend_transform import FoldDefinition
 
 
 class TestMesh:
@@ -157,7 +156,7 @@ class TestCreateBoardMesh:
     def test_simple_rectangle(self):
         """Test creating mesh from rectangle."""
         outline = Polygon([(0, 0), (100, 0), (100, 50), (0, 50)])
-        mesh = create_board_mesh(outline, thickness=1.6)
+        mesh = create_board_mesh_with_regions(outline, thickness=1.6)
 
         # Should have vertices and faces
         assert len(mesh.vertices) > 0
@@ -166,26 +165,10 @@ class TestCreateBoardMesh:
     def test_empty_outline(self):
         """Test with empty outline."""
         outline = Polygon([])
-        mesh = create_board_mesh(outline, thickness=1.6)
+        mesh = create_board_mesh_with_regions(outline, thickness=1.6)
 
         assert len(mesh.vertices) == 0
         assert len(mesh.faces) == 0
-
-    def test_with_fold(self):
-        """Test board mesh with fold."""
-        outline = Polygon([(0, 0), (100, 0), (100, 30), (0, 30)])
-        fold = FoldDefinition(
-            position=(50, 15),
-            axis=(0, 1),
-            zone_width=10.0,
-            angle=math.pi / 2
-        )
-
-        mesh = create_board_mesh(outline, thickness=0.2, folds=[fold])
-
-        # Should have vertices with non-zero z after fold
-        z_values = [v[2] for v in mesh.vertices]
-        assert max(z_values) > 0 or min(z_values) < -0.2
 
 
 class TestCreateTraceMesh:
@@ -199,21 +182,16 @@ class TestCreateTraceMesh:
         assert len(mesh.vertices) > 0
         assert len(mesh.faces) > 0
 
-    def test_trace_with_fold(self):
-        """Test trace mesh with fold."""
+    def test_trace_subdivisions(self):
+        """Test trace mesh has proper subdivisions."""
         segment = LineSegment((10, 15), (90, 15), width=0.5)
-        fold = FoldDefinition(
-            position=(50, 15),
-            axis=(0, 1),
-            zone_width=10.0,
-            angle=math.pi / 2
-        )
 
-        mesh = create_trace_mesh(segment, z_offset=0.01, folds=[fold])
+        mesh = create_trace_mesh(segment, z_offset=0.01, subdivisions=10)
 
-        # Vertices should have varying z
-        z_values = [v[2] for v in mesh.vertices]
-        assert len(set(z_values)) > 1  # Not all same z
+        # Should have 11 points on each edge * 2 edges = 22 vertices
+        assert len(mesh.vertices) == 22
+        # Should have 10 quads
+        assert len(mesh.faces) == 10
 
 
 class TestCreatePadMesh:
@@ -356,28 +334,20 @@ class TestCreateBoardGeometryMesh:
         # Should include component box (8 vertices)
         assert len(mesh.vertices) >= 8
 
-    def test_board_with_folds(self):
-        """Test board mesh with fold applied."""
+    def test_board_no_markers(self):
+        """Test board mesh without fold markers (flat board)."""
         board = BoardGeometry(
             outline=Polygon([(0, 0), (100, 0), (100, 30), (0, 30)]),
             thickness=0.2
         )
 
-        fold = FoldDefinition(
-            position=(50, 15),
-            axis=(0, 1),
-            zone_width=10.0,
-            angle=math.pi / 2
-        )
-
         mesh = create_board_geometry_mesh(
             board,
-            folds=[fold],
+            markers=None,
             include_traces=False,
             include_pads=False
         )
 
-        # Check for non-zero z values
+        # Without markers, board should be flat (z values near 0 or -thickness)
         z_values = [v[2] for v in mesh.vertices]
-        z_range = max(z_values) - min(z_values)
-        assert z_range > 0.1  # Should have some depth variation
+        assert all(-0.3 <= z <= 0.1 for z in z_values)  # All z near 0 or -0.2

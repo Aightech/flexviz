@@ -1534,8 +1534,11 @@ def compute_fold_recipes(
                 current, neighbor, fold_markers, already_in_recipe, fold_extents
             )
 
-            # Neighbor's recipe = current's recipe + crossed folds
-            neighbor.fold_recipe = current.fold_recipe.copy()
+            # Neighbor's recipe starts with current's recipe.
+            # We inherit all folds - the BFS traversal ensures correct propagation.
+            # (The fold_reaches_region check was too aggressive and filtered out
+            # AFTER folds where the marker lines don't intersect the region boundary)
+            neighbor.fold_recipe = list(current.fold_recipe)
 
             # Add crossed folds, handling upgrades from IN_ZONE to AFTER
             for fold, classification in crossed:

@@ -5,7 +5,6 @@ Creates 3D meshes from board geometry with bend transformations applied.
 """
 
 from dataclasses import dataclass, field
-from typing import Optional
 import math
 
 try:
@@ -14,9 +13,7 @@ try:
         ComponentGeometry, subdivide_polygon, line_segment_to_ribbon,
         pad_to_polygon, component_to_box
     )
-    from .bend_transform import (
-        FoldDefinition, FoldRecipe, transform_point, compute_normal, transform_point_and_normal
-    )
+    from .bend_transform import FoldDefinition, FoldRecipe, transform_point, transform_point_and_normal
     from .markers import FoldMarker
     from .planar_subdivision import split_board_into_regions, Region, find_containing_region
 except ImportError:
@@ -25,9 +22,7 @@ except ImportError:
         ComponentGeometry, subdivide_polygon, line_segment_to_ribbon,
         pad_to_polygon, component_to_box
     )
-    from bend_transform import (
-        FoldDefinition, FoldRecipe, transform_point, compute_normal, transform_point_and_normal
-    )
+    from bend_transform import FoldDefinition, FoldRecipe, transform_point, transform_point_and_normal
     from markers import FoldMarker
     from planar_subdivision import split_board_into_regions, Region, find_containing_region
 
@@ -613,23 +608,6 @@ def get_region_recipe(region: Region) -> FoldRecipe:
             for fm, classification in region.fold_recipe]
 
 
-def transform_vertex(
-    point: tuple[float, float],
-    recipe: FoldRecipe
-) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
-    """
-    Transform a 2D point to 3D and compute its surface normal.
-
-    Args:
-        point: 2D point (x, y)
-        recipe: Fold recipe from region
-
-    Returns:
-        (position, normal) tuple
-    """
-    return transform_point_and_normal(point, recipe)
-
-
 def transform_vertices_with_thickness(
     vertices_2d: list[tuple[float, float]],
     recipe: FoldRecipe,
@@ -651,7 +629,7 @@ def transform_vertices_with_thickness(
     normals = []
 
     for v in vertices_2d:
-        v3d, normal = transform_vertex(v, recipe)
+        v3d, normal = transform_point_and_normal(v, recipe)
         top_vertices.append(v3d)
         normals.append(normal)
         bottom_vertices.append((
@@ -741,196 +719,9 @@ def snap_to_plane(vertices: list[tuple[float, float, float]],
     return result
 
 
-def create_board_mesh(
-    outline: Polygon,
-    thickness: float,
-    folds: list[FoldDefinition] = None,
-    subdivide_length: float = 1.0,
-    cutouts: list[Polygon] = None
-) -> Mesh:
-    """
-    Create a 3D mesh for the board outline.
-
-    Args:
-        outline: Board outline polygon
-        thickness: Board thickness in mm
-        folds: List of fold definitions to apply
-        subdivide_length: Maximum edge length for subdivision
-        cutouts: List of cutout polygons (holes in the board)
-
-    Returns:
-        Mesh representing the board
-    """
-    if not outline.vertices:
-        return Mesh()
-
-    mesh = Mesh()
-    folds = folds or []
-    cutouts = cutouts or []
-
-    # Subdivide for smooth bending
-    subdivided = subdivide_polygon(outline, subdivide_length)
-
-    # Transform top surface vertices with normals
-    top_vertices = []
-    vertex_normals = []
-    for v in subdivided.vertices:
-        if folds:
-            v3d, normal = transform_point_with_normal(v, folds)
-        else:
-            v3d = (v[0], v[1], 0.0)
-            normal = (0.0, 0.0, 1.0)
-        top_vertices.append(v3d)
-        vertex_normals.append(normal)
-
-    # Transform bottom surface vertices (offset along negative normal)
-    bottom_vertices = []
-    for v3d, normal in zip(top_vertices, vertex_normals):
-        bottom_vertices.append((
-            v3d[0] - normal[0] * thickness,
-            v3d[1] - normal[1] * thickness,
-            v3d[2] - normal[2] * thickness
-        ))
-
-    # Add outline vertices to mesh
-    n = len(top_vertices)
-    top_indices = [mesh.add_vertex(v) for v in top_vertices]
-    bottom_indices = [mesh.add_vertex(v) for v in bottom_vertices]
-
-    # Process cutouts - transform vertices and add to mesh
-    cutout_top_indices = []
-    cutout_bottom_indices = []
-    cutout_2d_verts = []
-
-    for cutout in cutouts:
-        cutout_top_verts = []
-        cutout_bottom_verts = []
-        cutout_2d = []
-
-        for v in cutout.vertices:
-            if folds:
-                v3d, normal = transform_point_with_normal(v, folds)
-            else:
-                v3d = (v[0], v[1], 0.0)
-                normal = (0.0, 0.0, 1.0)
-            cutout_top_verts.append(v3d)
-            cutout_bottom_verts.append((
-                v3d[0] - normal[0] * thickness,
-                v3d[1] - normal[1] * thickness,
-                v3d[2] - normal[2] * thickness
-            ))
-            cutout_2d.append((v[0], v[1]))
-
-        # Add cutout vertices to mesh
-        ct_indices = [mesh.add_vertex(v) for v in cutout_top_verts]
-        cb_indices = [mesh.add_vertex(v) for v in cutout_bottom_verts]
-
-        cutout_top_indices.append(ct_indices)
-        cutout_bottom_indices.append(cb_indices)
-        cutout_2d_verts.append(cutout_2d)
-
-    # Create top/bottom faces with holes
-    # Use 2D coordinates for triangulation
-    outline_2d = [(v[0], v[1]) for v in subdivided.vertices]
-
-    if cutouts:
-        # Triangulate with hole filtering (removes triangles inside holes)
-        triangles, merged = triangulate_with_holes(outline_2d, cutout_2d_verts)
-
-        # Build a mapping from merged 2D vertices to mesh vertex indices
-        # First, create lookup for outline and cutout vertices
-        all_2d = list(outline_2d)
-        all_top_indices = list(top_indices)
-        all_bottom_indices = list(bottom_indices)
-
-        for cutout_2d, ct_idx, cb_idx in zip(cutout_2d_verts, cutout_top_indices, cutout_bottom_indices):
-            all_2d.extend(cutout_2d)
-            all_top_indices.extend(ct_idx)
-            all_bottom_indices.extend(cb_idx)
-
-        # Map merged vertices to mesh indices
-        merged_top_indices = []
-        merged_bottom_indices = []
-        for v2d in merged:
-            # Find matching vertex in all_2d
-            found = False
-            for i, av in enumerate(all_2d):
-                if abs(av[0] - v2d[0]) < 0.001 and abs(av[1] - v2d[1]) < 0.001:
-                    merged_top_indices.append(all_top_indices[i])
-                    merged_bottom_indices.append(all_bottom_indices[i])
-                    found = True
-                    break
-            if not found:
-                # Bridge vertices - create new mesh vertices
-                if folds:
-                    v3d, normal = transform_point_with_normal(v2d, folds)
-                else:
-                    v3d = (v2d[0], v2d[1], 0.0)
-                    normal = (0.0, 0.0, 1.0)
-                ti = mesh.add_vertex(v3d)
-                bi = mesh.add_vertex((
-                    v3d[0] - normal[0] * thickness,
-                    v3d[1] - normal[1] * thickness,
-                    v3d[2] - normal[2] * thickness
-                ))
-                merged_top_indices.append(ti)
-                merged_bottom_indices.append(bi)
-
-        # Create top faces
-        for tri in triangles:
-            mesh.add_triangle(
-                merged_top_indices[tri[0]],
-                merged_top_indices[tri[1]],
-                merged_top_indices[tri[2]],
-                COLOR_BOARD
-            )
-
-        # Create bottom faces (reversed winding)
-        for tri in triangles:
-            mesh.add_triangle(
-                merged_bottom_indices[tri[0]],
-                merged_bottom_indices[tri[2]],
-                merged_bottom_indices[tri[1]],
-                COLOR_BOARD
-            )
-    else:
-        # No cutouts - simple triangulation
-        triangles = triangulate_polygon(outline_2d)
-
-        for tri in triangles:
-            mesh.add_triangle(top_indices[tri[0]], top_indices[tri[1]], top_indices[tri[2]], COLOR_BOARD)
-
-        for tri in triangles:
-            mesh.add_triangle(bottom_indices[tri[0]], bottom_indices[tri[2]], bottom_indices[tri[1]], COLOR_BOARD)
-
-    # Create side faces for outline (quads connecting top and bottom)
-    for i in range(n):
-        j = (i + 1) % n
-        mesh.add_quad(
-            top_indices[i], top_indices[j],
-            bottom_indices[j], bottom_indices[i],
-            COLOR_BOARD
-        )
-
-    # Create side faces for cutouts (inner walls)
-    for ct_indices, cb_indices in zip(cutout_top_indices, cutout_bottom_indices):
-        nc = len(ct_indices)
-        for i in range(nc):
-            j = (i + 1) % nc
-            # Reversed winding for inner walls (facing inward)
-            mesh.add_quad(
-                ct_indices[j], ct_indices[i],
-                cb_indices[i], cb_indices[j],
-                COLOR_CUTOUT
-            )
-
-    return mesh
-
-
 def create_board_mesh_with_regions(
     outline: Polygon,
     thickness: float,
-    folds: list[FoldDefinition] = None,
     markers: list[FoldMarker] = None,
     subdivide_length: float = 1.0,
     cutouts: list[Polygon] = None,
@@ -948,8 +739,7 @@ def create_board_mesh_with_regions(
     Args:
         outline: Board outline polygon
         thickness: Board thickness in mm
-        folds: List of fold definitions to apply (for 3D transform)
-        markers: List of fold markers (for region splitting)
+        markers: List of fold markers (for region splitting and 3D transform)
         subdivide_length: Maximum edge length for subdivision
         cutouts: List of cutout polygons (holes in the board)
         num_bend_subdivisions: Number of strips in bend zone
@@ -962,20 +752,25 @@ def create_board_mesh_with_regions(
     if not outline.vertices:
         return Mesh()
 
-    # If no markers, fall back to standard meshing
-    if not markers:
-        return create_board_mesh(outline, thickness, folds, subdivide_length, cutouts)
-
     mesh = Mesh()
-    folds = folds or []
     cutouts = cutouts or []
 
     # Convert outline and cutouts to lists of tuples
     outline_verts = [(v[0], v[1]) for v in outline.vertices]
     cutout_verts = [[(v[0], v[1]) for v in c.vertices] for c in cutouts]
 
-    # Split into regions along fold lines
-    regions = split_board_into_regions(outline_verts, cutout_verts, markers, num_bend_subdivisions)
+    # Split into regions along fold lines (or single region if no markers)
+    if markers:
+        regions = split_board_into_regions(outline_verts, cutout_verts, markers, num_bend_subdivisions)
+    else:
+        # No markers - create single region covering whole board
+        single_region = Region(
+            index=0,
+            outline=outline_verts,
+            holes=cutout_verts,
+            fold_recipe=[]
+        )
+        regions = [single_region]
 
     # Process each region
     for region in regions:
@@ -1037,7 +832,7 @@ def create_board_mesh_with_regions(
             hole_bottom_verts = []
 
             for v in hole_2d:
-                v3d, normal = transform_vertex(v, region_recipe)
+                v3d, normal = transform_point_and_normal(v, region_recipe)
                 hole_top_verts.append(v3d)
                 hole_bottom_verts.append((
                     v3d[0] - normal[0] * thickness,
@@ -1078,7 +873,7 @@ def create_board_mesh_with_regions(
                         found = True
                         break
                 if not found:
-                    v3d, normal = transform_vertex(v2d, region_recipe)
+                    v3d, normal = transform_point_and_normal(v2d, region_recipe)
                     ti = mesh.add_vertex(v3d)
                     bi = mesh.add_vertex((
                         v3d[0] - normal[0] * thickness,
@@ -1119,7 +914,6 @@ def create_board_mesh_with_regions(
 def create_trace_mesh(
     segment: LineSegment,
     z_offset: float,
-    folds: list[FoldDefinition] = None,
     regions: list[Region] = None,
     subdivisions: int = 20
 ) -> Mesh:
@@ -1129,7 +923,6 @@ def create_trace_mesh(
     Args:
         segment: Trace line segment with width
         z_offset: Z offset for the trace (on top of board)
-        folds: List of fold definitions (unused if regions provided)
         regions: List of Region objects for region-based transformation
         subdivisions: Number of subdivisions along the trace
 
@@ -1146,7 +939,7 @@ def create_trace_mesh(
         return mesh
 
     # Find which region the trace midpoint is in
-    trace_mid = ((segment.start_x + segment.end_x) / 2, (segment.start_y + segment.end_y) / 2)
+    trace_mid = ((segment.start[0] + segment.end[0]) / 2, (segment.start[1] + segment.end[1]) / 2)
     region_recipe = []
 
     if regions:
@@ -1169,9 +962,9 @@ def create_trace_mesh(
         p1 = (v0[0] + t * (v1[0] - v0[0]), v0[1] + t * (v1[1] - v0[1]))
         p2 = (v3[0] + t * (v2[0] - v3[0]), v3[1] + t * (v2[1] - v3[1]))
 
-        # Transform to 3D using recipe-based function
-        p1_3d, _ = transform_vertex(p1, region_recipe)
-        p2_3d, _ = transform_vertex(p2, region_recipe)
+        # Transform to 3D
+        p1_3d = transform_point(p1, region_recipe)
+        p2_3d = transform_point(p2, region_recipe)
 
         # Add z offset
         p1_3d = (p1_3d[0], p1_3d[1], p1_3d[2] + z_offset)
@@ -1198,7 +991,6 @@ def create_trace_mesh(
 def create_pad_mesh(
     pad: PadGeometry,
     z_offset: float,
-    folds: list[FoldDefinition] = None,
     regions: list[Region] = None
 ) -> Mesh:
     """
@@ -1207,7 +999,6 @@ def create_pad_mesh(
     Args:
         pad: Pad geometry
         z_offset: Z offset for the pad
-        folds: List of fold definitions (unused if regions provided)
         regions: List of Region objects for region-based transformation
 
     Returns:
@@ -1230,7 +1021,7 @@ def create_pad_mesh(
     # Transform vertices using recipe-based function
     vertices_3d = []
     for v in poly.vertices:
-        v3d, _ = transform_vertex(v, region_recipe)
+        v3d = transform_point(v, region_recipe)
         vertices_3d.append((v3d[0], v3d[1], v3d[2] + z_offset))
 
     # Add vertices
@@ -1247,7 +1038,6 @@ def create_pad_mesh(
 def create_component_mesh(
     component: ComponentGeometry,
     height: float,
-    folds: list[FoldDefinition] = None,
     regions: list[Region] = None
 ) -> Mesh:
     """
@@ -1256,7 +1046,6 @@ def create_component_mesh(
     Args:
         component: Component geometry
         height: Component height
-        folds: List of fold definitions (unused if regions provided)
         regions: List of Region objects for region-based transformation
 
     Returns:
@@ -1279,7 +1068,7 @@ def create_component_mesh(
     # Transform bottom vertices using recipe-based function
     bottom_3d = []
     for v in box.vertices:
-        v3d, _ = transform_vertex(v, region_recipe)
+        v3d = transform_point(v, region_recipe)
         bottom_3d.append(v3d)
 
     # Create top vertices (offset by height in local up direction)
@@ -1311,77 +1100,11 @@ def create_component_mesh(
     return mesh
 
 
-# Color for cutout walls (darker than board)
-COLOR_CUTOUT = (25, 100, 25)
-
-
-def create_cutout_mesh(
-    cutout: Polygon,
-    thickness: float,
-    folds: list[FoldDefinition] = None
-) -> Mesh:
-    """
-    Create a 3D mesh for a cutout hole (cylinder walls only).
-
-    Args:
-        cutout: Cutout polygon (approximated circle)
-        thickness: Board thickness in mm
-        folds: List of fold definitions
-
-    Returns:
-        Mesh representing the cutout walls
-    """
-    if len(cutout.vertices) < 3:
-        return Mesh()
-
-    mesh = Mesh()
-    folds = folds or []
-
-    # Transform vertices to 3D with normals
-    top_vertices = []
-    vertex_normals = []
-    for v in cutout.vertices:
-        if folds:
-            v3d, normal = transform_point_with_normal(v, folds)
-        else:
-            v3d = (v[0], v[1], 0.0)
-            normal = (0.0, 0.0, 1.0)
-        top_vertices.append(v3d)
-        vertex_normals.append(normal)
-
-    # Bottom vertices (offset along negative normal)
-    bottom_vertices = []
-    for v3d, normal in zip(top_vertices, vertex_normals):
-        bottom_vertices.append((
-            v3d[0] - normal[0] * thickness,
-            v3d[1] - normal[1] * thickness,
-            v3d[2] - normal[2] * thickness
-        ))
-
-    # Add vertices to mesh
-    n = len(top_vertices)
-    top_indices = [mesh.add_vertex(v) for v in top_vertices]
-    bottom_indices = [mesh.add_vertex(v) for v in bottom_vertices]
-
-    # Create side faces (cylinder walls)
-    # Note: facing inward so winding is reversed compared to board outline
-    for i in range(n):
-        j = (i + 1) % n
-        mesh.add_quad(
-            top_indices[j], top_indices[i],
-            bottom_indices[i], bottom_indices[j],
-            COLOR_CUTOUT
-        )
-
-    return mesh
-
-
 def create_stiffener_mesh(
     outline: list[tuple[float, float]],
     stiffener_thickness: float,
     pcb_thickness: float,
     side: str,
-    folds: list[FoldDefinition] = None,
     regions: list[Region] = None
 ) -> Mesh:
     """
@@ -1395,7 +1118,6 @@ def create_stiffener_mesh(
         stiffener_thickness: Thickness of the stiffener in mm
         pcb_thickness: PCB thickness in mm (to position stiffener)
         side: "top" or "bottom" - which side the stiffener is on
-        folds: List of fold definitions (unused if regions provided)
         regions: List of Region objects for region-based transformation
 
     Returns:
@@ -1422,7 +1144,7 @@ def create_stiffener_mesh(
     vertex_normals = []
 
     for v in outline:
-        v3d, normal = transform_vertex(v, region_recipe)
+        v3d, normal = transform_point_and_normal(v, region_recipe)
         top_vertices_pcb.append(v3d)
         vertex_normals.append(normal)
 
@@ -1489,7 +1211,6 @@ def create_stiffener_mesh(
 
 def create_board_geometry_mesh(
     board: BoardGeometry,
-    folds: list[FoldDefinition] = None,
     markers: list[FoldMarker] = None,
     include_traces: bool = True,
     include_pads: bool = True,
@@ -1506,8 +1227,7 @@ def create_board_geometry_mesh(
 
     Args:
         board: Board geometry
-        folds: List of fold definitions (for 3D transform)
-        markers: List of fold markers (for region-based triangulation)
+        markers: List of fold markers (for region splitting and 3D transform)
         include_traces: Include copper traces
         include_pads: Include pads
         include_components: Include component boxes
@@ -1522,7 +1242,6 @@ def create_board_geometry_mesh(
         Complete mesh
     """
     mesh = Mesh()
-    folds = folds or []
 
     # Compute regions for region-based transformation
     regions = None
@@ -1536,12 +1255,11 @@ def create_board_geometry_mesh(
             num_bend_subdivisions=num_bend_subdivisions
         )
 
-    # Board outline with cutouts - use region-based meshing if markers provided
+    # Board outline with cutouts
     if board.outline.vertices:
         board_mesh = create_board_mesh_with_regions(
             board.outline,
             board.thickness,
-            folds,
             markers=markers,
             subdivide_length=subdivide_length,
             cutouts=board.cutouts,
@@ -1551,8 +1269,7 @@ def create_board_geometry_mesh(
         )
         mesh.merge(board_mesh)
 
-    # Use empty folds/regions when bending is disabled
-    active_folds = folds if apply_bend else []
+    # Use empty regions when bending is disabled
     active_regions = regions if apply_bend else None
 
     # Traces
@@ -1560,20 +1277,20 @@ def create_board_geometry_mesh(
         z_offset = 0.01  # Slightly above board surface
         for layer, traces in board.traces.items():
             for trace in traces:
-                trace_mesh = create_trace_mesh(trace, z_offset, active_folds, active_regions)
+                trace_mesh = create_trace_mesh(trace, z_offset, active_regions)
                 mesh.merge(trace_mesh)
 
     # Pads
     if include_pads:
         z_offset = 0.02  # Above traces
         for pad in board.all_pads:
-            pad_mesh = create_pad_mesh(pad, z_offset, active_folds, active_regions)
+            pad_mesh = create_pad_mesh(pad, z_offset, active_regions)
             mesh.merge(pad_mesh)
 
     # Components
     if include_components:
         for comp in board.components:
-            comp_mesh = create_component_mesh(comp, component_height, active_folds, active_regions)
+            comp_mesh = create_component_mesh(comp, component_height, active_regions)
             mesh.merge(comp_mesh)
 
     # Stiffeners
@@ -1584,7 +1301,6 @@ def create_board_geometry_mesh(
                 stiffener_thickness=stiffener.thickness,
                 pcb_thickness=board.thickness,
                 side=stiffener.side,
-                folds=folds,
                 regions=regions
             )
             mesh.merge(stiff_mesh)

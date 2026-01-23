@@ -667,7 +667,6 @@ class FlexViewerFrame(wx.Frame):
         # Generate mesh
         mesh = create_board_geometry_mesh(
             self.board_geometry,
-            folds=self.folds,
             markers=self.fold_markers,
             include_traces=self.cb_traces.GetValue() if hasattr(self, 'cb_traces') else True,
             include_pads=self.cb_pads.GetValue() if hasattr(self, 'cb_pads') else True,
