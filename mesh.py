@@ -600,12 +600,17 @@ def get_region_recipe(region: Region) -> FoldRecipe:
         region: Region object with fold_recipe attribute
 
     Returns:
-        FoldRecipe (list of (FoldDefinition, classification) tuples)
+        FoldRecipe (list of (FoldDefinition, classification, entered_from_back) tuples)
     """
     if not hasattr(region, 'fold_recipe') or not region.fold_recipe:
         return []
-    return [(FoldDefinition.from_marker(fm), classification)
-            for fm, classification in region.fold_recipe]
+    result = []
+    for entry in region.fold_recipe:
+        fm = entry[0]
+        classification = entry[1]
+        entered_from_back = entry[2] if len(entry) > 2 else False
+        result.append((FoldDefinition.from_marker(fm), classification, entered_from_back))
+    return result
 
 
 def transform_vertices_with_thickness(

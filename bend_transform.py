@@ -317,7 +317,7 @@ def compute_normal(
 
     Args:
         point: 2D point (x, y)
-        recipe: List of (FoldDefinition, classification) tuples
+        recipe: List of (FoldDefinition, classification, entered_from_back) tuples
 
     Returns:
         Unit normal vector (nx, ny, nz)
@@ -327,7 +327,11 @@ def compute_normal(
 
     rot = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
 
-    for fold, classification in recipe:
+    for entry in recipe:
+        fold = entry[0]
+        classification = entry[1]
+        entered_from_back = entry[2] if len(entry) > 2 else False
+
         # Transform fold axis through cumulative rotation
         fold_axis_3d = _apply_rotation(rot, (fold.axis[0], fold.axis[1], 0.0))
 
@@ -340,6 +344,10 @@ def compute_normal(
             dy = point[1] - fold.center[1]
             perp_dist = dx * fold.perp[0] + dy * fold.perp[1]
             hw = fold.zone_width / 2
+
+            # For back entry, negate perp_dist to measure from opposite side
+            if entered_from_back:
+                perp_dist = -perp_dist
 
             dist_into_zone = perp_dist + hw
             dist_into_zone = max(0, min(dist_into_zone, fold.zone_width))
