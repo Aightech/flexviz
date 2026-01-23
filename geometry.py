@@ -127,6 +127,7 @@ class LineSegment:
     start: tuple[float, float]
     end: tuple[float, float]
     width: float = 0.1
+    layer: str = "F.Cu"  # Copper layer (F.Cu or B.Cu)
 
     @property
     def length(self) -> float:
@@ -243,7 +244,8 @@ def extract_geometry(pcb: KiCadPCB) -> BoardGeometry:
         traces[layer].append(LineSegment(
             start=(trace.start_x, trace.start_y),
             end=(trace.end_x, trace.end_y),
-            width=trace.width
+            width=trace.width,
+            layer=layer
         ))
 
     # Get components

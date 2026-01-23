@@ -920,16 +920,18 @@ def create_trace_mesh(
     segment: LineSegment,
     z_offset: float,
     regions: list[Region] = None,
-    subdivisions: int = 20
+    subdivisions: int = 20,
+    pcb_thickness: float = 0.0
 ) -> Mesh:
     """
     Create a 3D mesh for a copper trace.
 
     Args:
         segment: Trace line segment with width
-        z_offset: Z offset for the trace (on top of board)
+        z_offset: Z offset for the trace (along surface normal)
         regions: List of Region objects for region-based transformation
         subdivisions: Number of subdivisions along the trace
+        pcb_thickness: PCB thickness for back layer trace positioning
 
     Returns:
         Mesh representing the trace
@@ -952,6 +954,9 @@ def create_trace_mesh(
         if containing_region:
             region_recipe = get_region_recipe(containing_region)
 
+    # Determine if trace is on back layer
+    is_back_layer = segment.layer == "B.Cu"
+
     # Subdivide the ribbon along its length
     v0, v1, v2, v3 = ribbon.vertices
 
@@ -967,13 +972,20 @@ def create_trace_mesh(
         p1 = (v0[0] + t * (v1[0] - v0[0]), v0[1] + t * (v1[1] - v0[1]))
         p2 = (v3[0] + t * (v2[0] - v3[0]), v3[1] + t * (v2[1] - v3[1]))
 
-        # Transform to 3D
-        p1_3d = transform_point(p1, region_recipe)
-        p2_3d = transform_point(p2, region_recipe)
+        # Transform to 3D with normal for proper offset
+        p1_3d, n1 = transform_point_and_normal(p1, region_recipe)
+        p2_3d, n2 = transform_point_and_normal(p2, region_recipe)
 
-        # Add z offset
-        p1_3d = (p1_3d[0], p1_3d[1], p1_3d[2] + z_offset)
-        p2_3d = (p2_3d[0], p2_3d[1], p2_3d[2] + z_offset)
+        if is_back_layer:
+            # Back layer: offset from bottom surface (negative normal direction)
+            total_offset = -(pcb_thickness + z_offset)
+        else:
+            # Front layer: offset from top surface (positive normal direction)
+            total_offset = z_offset
+
+        # Apply offset along normal
+        p1_3d = (p1_3d[0] + n1[0] * total_offset, p1_3d[1] + n1[1] * total_offset, p1_3d[2] + n1[2] * total_offset)
+        p2_3d = (p2_3d[0] + n2[0] * total_offset, p2_3d[1] + n2[1] * total_offset, p2_3d[2] + n2[2] * total_offset)
 
         edge1_points.append(p1_3d)
         edge2_points.append(p2_3d)
@@ -983,12 +995,20 @@ def create_trace_mesh(
     edge2_indices = [mesh.add_vertex(p) for p in edge2_points]
 
     # Create quads between the two edges
+    # Reverse winding for back layer so normals face outward
     for i in range(subdivisions):
-        mesh.add_quad(
-            edge1_indices[i], edge1_indices[i + 1],
-            edge2_indices[i + 1], edge2_indices[i],
-            COLOR_COPPER
-        )
+        if is_back_layer:
+            mesh.add_quad(
+                edge2_indices[i], edge2_indices[i + 1],
+                edge1_indices[i + 1], edge1_indices[i],
+                COLOR_COPPER
+            )
+        else:
+            mesh.add_quad(
+                edge1_indices[i], edge1_indices[i + 1],
+                edge2_indices[i + 1], edge2_indices[i],
+                COLOR_COPPER
+            )
 
     return mesh
 
@@ -1442,7 +1462,7 @@ def create_board_geometry_mesh(
         z_offset = 0.01  # Slightly above board surface
         for layer, traces in board.traces.items():
             for trace in traces:
-                trace_mesh = create_trace_mesh(trace, z_offset, active_regions)
+                trace_mesh = create_trace_mesh(trace, z_offset, active_regions, pcb_thickness=board.thickness)
                 mesh.merge(trace_mesh)
 
     # Pads
