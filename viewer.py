@@ -1082,16 +1082,33 @@ class FlexViewerFrame(wx.Frame):
     def on_export_step(self, event):
         """Export to STEP file."""
         if not is_step_export_available():
-            wx.MessageBox(
-                "STEP export is not available inside KiCad due to library conflicts.\n\n"
-                "Use the command-line export instead:\n\n"
-                "1. Open a terminal in the flexviz directory\n"
-                "2. Run: source venv/bin/activate\n"
-                "3. Run: python step_export_cli.py your_board.kicad_pcb output.step\n\n"
-                "See docs/STEP_EXPORT.md for details.",
-                "STEP Export",
-                wx.OK | wx.ICON_INFORMATION
-            )
+            # Get paths for the command
+            plugin_dir = os.path.dirname(os.path.abspath(__file__))
+            venv_activate = os.path.join(plugin_dir, "venv", "bin", "activate")
+            cli_script = os.path.join(plugin_dir, "step_export_cli.py")
+
+            # Get PCB path if available
+            pcb_path = getattr(self, 'pcb_filepath', None) or "your_board.kicad_pcb"
+
+            # Suggest output path next to the PCB
+            if pcb_path and pcb_path != "your_board.kicad_pcb":
+                output_path = os.path.splitext(pcb_path)[0] + ".step"
+            else:
+                output_path = "output.step"
+
+            commands = f"""STEP export must run from command line (KiCad library conflicts).
+
+Copy and paste these commands into a terminal:
+
+source "{venv_activate}"
+python "{cli_script}" "{pcb_path}" "{output_path}"
+
+Options:
+  --flat           Export unbent board
+  --subdivisions N Bend quality (default: 4)
+  --pads           Include pads"""
+
+            wx.MessageBox(commands, "STEP Export Commands", wx.OK | wx.ICON_INFORMATION)
             return
 
         if self.canvas.mesh is None:
