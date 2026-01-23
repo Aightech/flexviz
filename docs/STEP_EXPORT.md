@@ -1,219 +1,125 @@
-# STEP Export Setup Guide
+# STEP Export Guide
 
-The STEP export feature requires the `build123d` package, which provides OpenCASCADE (OCC) bindings for creating solid CAD geometry.
+The STEP export feature converts the bent flex PCB mesh to solid CAD geometry using `build123d` (OpenCASCADE bindings).
 
-## Why Special Setup is Needed
+## Important: Command-Line Only
 
-KiCad plugins run inside KiCad's bundled Python environment, which is separate from your system Python. To use STEP export, you need to install `build123d` into KiCad's Python environment.
+**STEP export must be run from the command line**, not from within KiCad. This is because build123d's dependencies (vtk, numpy) conflict with KiCad's bundled libraries and cause crashes.
 
-## Installation by Operating System
+Clicking "Export STEP" in the viewer will show instructions for command-line export.
 
-### Linux (Ubuntu/Debian)
-
-KiCad on Linux uses the system Python. Installation method depends on your distro version:
-
-#### Ubuntu 23.04+ / Debian 12+ (PEP 668 systems)
-
-Modern systems protect the system Python. Use the `--break-system-packages` flag for user installs:
+## Quick Start
 
 ```bash
-pip3 install --user --break-system-packages build123d
+cd /path/to/flexviz
+source venv/bin/activate
+python step_export_cli.py your_board.kicad_pcb output.step
 ```
 
-This is safe because `--user` installs to `~/.local/` (your home directory), not system-wide.
+## CLI Options
 
-#### Older Ubuntu/Debian
+```
+Usage: step_export_cli.py <input.kicad_pcb> <output.step> [options]
+
+Options:
+  --flat              Export flat (unbent) board
+  --subdivisions N    Bend zone subdivisions (default: 4)
+  --traces            Include copper traces
+  --pads              Include pads
+  --max-faces N       Maximum faces to export (default: 5000)
+
+Examples:
+  python step_export_cli.py board.kicad_pcb output.step
+  python step_export_cli.py board.kicad_pcb flat.step --flat
+  python step_export_cli.py board.kicad_pcb detailed.step --subdivisions 8 --pads
+```
+
+## Installation
+
+### Using the Project Virtual Environment (Recommended)
+
+The project venv should already have build123d. If not:
 
 ```bash
-pip3 install --user build123d
+cd /path/to/flexviz
+source venv/bin/activate
+pip install build123d
 ```
 
-#### Using the install script
+### Installing build123d on Different Systems
 
-The easiest method - the script auto-detects your system:
+If you need to set up a new environment:
+
+#### Linux (Ubuntu/Debian)
 
 ```bash
-./install_step_export.sh
+python3 -m venv venv
+source venv/bin/activate
+pip install build123d
 ```
 
-3. **Verify installation:**
-   - Open KiCad PCB Editor
-   - Go to Tools → Scripting Console
-   - Type:
-     ```python
-     from build123d import Box
-     print("build123d OK")
-     ```
+#### Windows
 
-### Linux (Fedora/RHEL)
+```cmd
+python -m venv venv
+venv\Scripts\activate
+pip install build123d
+```
+
+#### macOS
 
 ```bash
-# Install dependencies first
-sudo dnf install python3-pip
-
-# Install build123d
-pip3 install --user build123d
+python3 -m venv venv
+source venv/bin/activate
+pip install build123d
 ```
 
-### Windows
+## Why Not Inside KiCad?
 
-1. **Find KiCad's Python:**
-   - KiCad 8.x/9.x includes Python at:
-     ```
-     C:\Program Files\KiCad\8.0\bin\python.exe
-     # or
-     C:\Program Files\KiCad\9.0\bin\python.exe
-     ```
+build123d depends on:
+- **vtk** - Visualization toolkit (conflicts with KiCad's OpenGL)
+- **numpy** - Numerical library (version conflicts)
+- **OCC** - OpenCASCADE (different version than KiCad's)
 
-2. **Open Command Prompt as Administrator:**
-   - Press Win+X → "Terminal (Admin)" or "Command Prompt (Admin)"
-
-3. **Install build123d:**
-   ```cmd
-   "C:\Program Files\KiCad\9.0\bin\python.exe" -m pip install build123d
-   ```
-
-   For KiCad 8.0:
-   ```cmd
-   "C:\Program Files\KiCad\8.0\bin\python.exe" -m pip install build123d
-   ```
-
-4. **If pip is not found:**
-   ```cmd
-   "C:\Program Files\KiCad\9.0\bin\python.exe" -m ensurepip
-   "C:\Program Files\KiCad\9.0\bin\python.exe" -m pip install --upgrade pip
-   "C:\Program Files\KiCad\9.0\bin\python.exe" -m pip install build123d
-   ```
-
-5. **Verify in KiCad:**
-   - Open KiCad PCB Editor
-   - Tools → Scripting Console
-   - Type:
-     ```python
-     from build123d import Box
-     print("build123d OK")
-     ```
-
-### macOS
-
-1. **Find KiCad's Python:**
-   - KiCad 8.x/9.x Python is at:
-     ```
-     /Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework/Versions/Current/bin/python3
-     ```
-
-2. **Open Terminal and install:**
-   ```bash
-   /Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework/Versions/Current/bin/python3 -m pip install build123d
-   ```
-
-3. **If permission denied:**
-   ```bash
-   /Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework/Versions/Current/bin/python3 -m pip install --user build123d
-   ```
-
-4. **Verify in KiCad Scripting Console:**
-   ```python
-   from build123d import Box
-   print("build123d OK")
-   ```
-
-## Troubleshooting
-
-### "No module named pip"
-
-Install pip first:
-```bash
-# Linux/macOS
-python3 -m ensurepip
-
-# Windows (in admin terminal)
-"C:\Program Files\KiCad\9.0\bin\python.exe" -m ensurepip
-```
-
-### Permission Errors
-
-- **Linux/macOS:** Add `--user` flag to pip install
-- **Windows:** Run terminal as Administrator
-
-### Build Errors During Installation
-
-build123d requires compilation of OCC bindings. If you see build errors:
-
-1. **Install build tools:**
-   - **Linux:** `sudo apt install build-essential python3-dev`
-   - **Windows:** Install Visual Studio Build Tools
-   - **macOS:** `xcode-select --install`
-
-2. **Try installing pre-built wheels:**
-   ```bash
-   pip install --only-binary :all: build123d
-   ```
-
-### KiCad Can't Find the Package
-
-If you installed build123d but KiCad still can't find it:
-
-1. Check where pip installed it:
-   ```bash
-   pip3 show build123d
-   ```
-
-2. Ensure the install location is in KiCad's Python path. In KiCad Scripting Console:
-   ```python
-   import sys
-   print(sys.path)
-   ```
-
-3. If needed, add the path manually in your plugin or KiCad's Python startup.
-
-## Alternative: Standalone Export
-
-If you cannot install build123d in KiCad's Python, you can export from the command line:
-
-```bash
-# Activate your venv with build123d installed
-source /path/to/flexviz/venv/bin/activate
-
-# Run the export script
-python3 -c "
-from step_export import board_geometry_to_step
-from geometry import extract_geometry
-from markers import detect_fold_markers
-from kicad_parser import KiCadPCB
-
-pcb = KiCadPCB.load('/path/to/your/board.kicad_pcb')
-geom = extract_geometry(pcb)
-markers = detect_fold_markers(pcb)
-
-board_geometry_to_step(geom, markers, 'output.step')
-"
-```
-
-## Checking STEP Export Availability
-
-In KiCad's Scripting Console, you can check if STEP export is available:
-
-```python
-try:
-    from build123d import Box
-    print("STEP export: Available")
-except ImportError as e:
-    print(f"STEP export: Not available - {e}")
-```
+Installing these in the system Python or KiCad's Python causes crashes. The solution is to use an isolated virtual environment and run exports from the command line.
 
 ## Performance Notes
 
-- STEP export converts mesh triangles to solid faces, which can be slow for complex meshes
-- For faster exports, reduce "Bend quality" (subdivisions) in the viewer before exporting
-- Meshes with more than 5000 faces will be automatically limited
+- STEP export converts mesh triangles to solid faces
 - Export time: ~1-2 seconds per 100 faces
+- Complex meshes (>5000 faces) are automatically limited
+- For faster exports, use lower `--subdivisions` value
 
-## File Compatibility
+## Output Compatibility
 
-The exported STEP files are compatible with:
+Exported STEP files (AP214) are compatible with:
 - FreeCAD
 - Fusion 360
 - SolidWorks
 - CATIA
-- Any CAD software supporting STEP AP214
+- Onshape
+- Any CAD software supporting STEP
+
+## Troubleshooting
+
+### "STEP export not available"
+
+Make sure you've activated the venv:
+```bash
+source venv/bin/activate
+python -c "from build123d import Box; print('OK')"
+```
+
+### Slow Export
+
+Reduce mesh complexity:
+```bash
+python step_export_cli.py board.kicad_pcb output.step --subdivisions 2
+```
+
+### Memory Errors
+
+Limit the number of faces:
+```bash
+python step_export_cli.py board.kicad_pcb output.step --max-faces 2000
+```

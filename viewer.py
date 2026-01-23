@@ -21,7 +21,6 @@ try:
     from .kicad_parser import KiCadPCB
     from .stiffener import extract_stiffeners
     from .validation import validate_design, get_fold_radius_status, ValidationResult
-    from .step_export import is_step_export_available, mesh_to_step
 except ImportError:
     from mesh import Mesh, create_board_geometry_mesh
     from bend_transform import FoldDefinition, create_fold_definitions
@@ -31,7 +30,38 @@ except ImportError:
     from kicad_parser import KiCadPCB
     from stiffener import extract_stiffeners
     from validation import validate_design, get_fold_radius_status, ValidationResult
-    from step_export import is_step_export_available, mesh_to_step
+
+# Lazy import for step_export to avoid crashes from build123d/vtk conflicts with KiCad
+_step_export_module = None
+
+def _get_step_export():
+    """Lazy load step_export module to avoid import-time crashes."""
+    global _step_export_module
+    if _step_export_module is None:
+        try:
+            try:
+                from . import step_export as mod
+            except ImportError:
+                import step_export as mod
+            _step_export_module = mod
+        except Exception as e:
+            print(f"Failed to load step_export: {e}")
+            _step_export_module = False
+    return _step_export_module
+
+def is_step_export_available():
+    """Check if STEP export is available."""
+    mod = _get_step_export()
+    if mod and mod is not False:
+        return mod.is_step_export_available()
+    return False
+
+def mesh_to_step(mesh, filename):
+    """Export mesh to STEP file."""
+    mod = _get_step_export()
+    if mod and mod is not False:
+        return mod.mesh_to_step(mesh, filename)
+    return False
 
 
 class GLCanvas(glcanvas.GLCanvas):
@@ -1053,11 +1083,14 @@ class FlexViewerFrame(wx.Frame):
         """Export to STEP file."""
         if not is_step_export_available():
             wx.MessageBox(
-                "STEP export not available.\n\n"
-                "Install build123d with:\n"
-                "pip install build123d",
-                "Export Error",
-                wx.OK | wx.ICON_WARNING
+                "STEP export is not available inside KiCad due to library conflicts.\n\n"
+                "Use the command-line export instead:\n\n"
+                "1. Open a terminal in the flexviz directory\n"
+                "2. Run: source venv/bin/activate\n"
+                "3. Run: python step_export_cli.py your_board.kicad_pcb output.step\n\n"
+                "See docs/STEP_EXPORT.md for details.",
+                "STEP Export",
+                wx.OK | wx.ICON_INFORMATION
             )
             return
 
