@@ -1145,9 +1145,20 @@ def create_stiffener_mesh(
     mesh = Mesh()
 
     # Find which region the stiffener center is in
+    # Use centroid, but if it falls inside a cutout, use outline vertex instead
     cx = sum(v[0] for v in outline) / len(outline)
     cy = sum(v[1] for v in outline) / len(outline)
     stiffener_center = (cx, cy)
+
+    # Check if centroid is inside any cutout
+    if cutouts:
+        from stiffener import point_in_polygon
+        for cutout in cutouts:
+            if point_in_polygon(stiffener_center, cutout):
+                # Centroid is in a hole - use first outline vertex instead
+                stiffener_center = outline[0]
+                break
+
     region_recipe = []
 
     if regions:
