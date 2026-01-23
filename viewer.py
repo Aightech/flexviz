@@ -91,6 +91,9 @@ class GLCanvas(glcanvas.GLCanvas):
         # Normalize normals (important when models have different scales)
         glEnable(GL_NORMALIZE)
 
+        # Disable backface culling - some models have inconsistent winding
+        glDisable(GL_CULL_FACE)
+
         # Background color (dark gray)
         glClearColor(0.2, 0.2, 0.2, 1.0)
 
