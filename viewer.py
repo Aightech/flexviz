@@ -630,10 +630,13 @@ class FlexViewerFrame(wx.Frame):
         if self.board_geometry is None:
             return
 
-        # Update fold definitions with current slider values
+        # Update fold definitions and markers with current slider values
         for i, slider in enumerate(self.fold_sliders):
+            angle_deg = slider.get_angle()
             if i < len(self.folds):
-                self.folds[i].angle = math.radians(slider.get_angle())
+                self.folds[i].angle = math.radians(angle_deg)
+            if i < len(self.fold_markers):
+                self.fold_markers[i].angle_degrees = angle_deg
 
         # Extract stiffeners if PCB, config available, and display enabled
         stiffeners = None
@@ -683,7 +686,10 @@ class FlexViewerFrame(wx.Frame):
         """Handle fold angle slider change."""
         if fold_index < len(self.folds):
             self.folds[fold_index].angle = math.radians(angle)
-            self.update_mesh()
+        # Also update the fold marker (used by mesh generation)
+        if fold_index < len(self.fold_markers):
+            self.fold_markers[fold_index].angle_degrees = angle
+        self.update_mesh()
 
     def on_wireframe_toggle(self, event):
         """Handle wireframe toggle."""
