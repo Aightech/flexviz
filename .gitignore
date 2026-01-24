@@ -26,3 +26,18 @@ Thumbs.db
 # Test outputs
 /tmp/
 *.log
+*.obj
+*.stl
+*.step
+tests/results/
+
+# Temporary test files
+test_*.py
+!tests/test_*.py
+
+# Config files (user-specific)
+*.flexviewer.json
+
+# Backup files
+*.bkp
+*~
