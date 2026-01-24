@@ -7,8 +7,8 @@ This plugin provides action buttons in KiCad PCB Editor:
 3. Open Viewer: Launch 3D visualization of the folded PCB
 """
 
-__version__ = "0.1.0"
-__author__ = "Neubond"
+__version__ = "1.0.0"
+__author__ = "Flex Viewer Contributors"
 
 try:
     from .plugin import FlexViewerTestAction, CreateFoldAction, OpenViewerAction

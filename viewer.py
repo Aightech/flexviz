@@ -411,6 +411,7 @@ class FoldSlider(wx.Panel):
             size=(80, -1)
         )
         self.spin.SetDigits(1)
+        self.spin.SetToolTip("Bend angle in degrees (positive = fold toward viewer)")
         sizer.Add(self.spin, 0, wx.RIGHT, 5)
 
         # Degree symbol
@@ -550,30 +551,36 @@ class FlexViewerFrame(wx.Frame):
         display_sizer = wx.StaticBoxSizer(display_box, wx.VERTICAL)
 
         self.cb_wireframe = wx.CheckBox(control_panel, label="Show Wireframe")
+        self.cb_wireframe.SetToolTip("Display mesh edges as wireframe overlay")
         self.cb_wireframe.Bind(wx.EVT_CHECKBOX, self.on_wireframe_toggle)
         display_sizer.Add(self.cb_wireframe, 0, wx.ALL, 3)
 
         self.cb_traces = wx.CheckBox(control_panel, label="Show Traces")
+        self.cb_traces.SetToolTip("Display copper traces on the PCB")
         self.cb_traces.SetValue(True)
         self.cb_traces.Bind(wx.EVT_CHECKBOX, self.on_display_option_changed)
         display_sizer.Add(self.cb_traces, 0, wx.ALL, 3)
 
         self.cb_pads = wx.CheckBox(control_panel, label="Show Pads")
+        self.cb_pads.SetToolTip("Display component pads and through-holes")
         self.cb_pads.SetValue(True)
         self.cb_pads.Bind(wx.EVT_CHECKBOX, self.on_display_option_changed)
         display_sizer.Add(self.cb_pads, 0, wx.ALL, 3)
 
         self.cb_components = wx.CheckBox(control_panel, label="Show Components")
+        self.cb_components.SetToolTip("Display component bounding boxes (simple 3D representation)")
         self.cb_components.SetValue(False)
         self.cb_components.Bind(wx.EVT_CHECKBOX, self.on_display_option_changed)
         display_sizer.Add(self.cb_components, 0, wx.ALL, 3)
 
         self.cb_stiffeners = wx.CheckBox(control_panel, label="Show Stiffeners")
+        self.cb_stiffeners.SetToolTip("Display stiffener regions from configured layers")
         self.cb_stiffeners.SetValue(True)
         self.cb_stiffeners.Bind(wx.EVT_CHECKBOX, self.on_display_option_changed)
         display_sizer.Add(self.cb_stiffeners, 0, wx.ALL, 3)
 
         self.cb_3d_models = wx.CheckBox(control_panel, label="Show 3D Models")
+        self.cb_3d_models.SetToolTip("Load and display 3D models from component footprints (slower)")
         self.cb_3d_models.SetValue(False)
         self.cb_3d_models.Bind(wx.EVT_CHECKBOX, self.on_display_option_changed)
         display_sizer.Add(self.cb_3d_models, 0, wx.ALL, 3)
@@ -601,6 +608,7 @@ class FlexViewerFrame(wx.Frame):
             min=1, max=32,
             size=(50, -1)
         )
+        self.spin_subdivisions.SetToolTip("Number of segments in bend zones (higher = smoother curves)")
         self.spin_subdivisions.Bind(wx.EVT_SPINCTRL, self.on_settings_changed)
         subdiv_sizer.Add(self.spin_subdivisions, 0, wx.RIGHT, 3)
         subdiv_sizer.Add(wx.StaticText(control_panel, label="strips"), 0, wx.ALIGN_CENTER_VERTICAL)
@@ -610,6 +618,7 @@ class FlexViewerFrame(wx.Frame):
         marker_sizer = wx.BoxSizer(wx.HORIZONTAL)
         marker_sizer.Add(wx.StaticText(control_panel, label="Marker layer:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
         self.choice_marker_layer = wx.Choice(control_panel, choices=self.available_layers, size=(80, -1))
+        self.choice_marker_layer.SetToolTip("Layer containing fold marker lines and dimensions")
         if self.config.marker_layer in self.available_layers:
             self.choice_marker_layer.SetSelection(self.available_layers.index(self.config.marker_layer))
         else:
@@ -634,6 +643,7 @@ class FlexViewerFrame(wx.Frame):
             size=(60, -1)
         )
         self.spin_stiffener_thickness.SetDigits(2)
+        self.spin_stiffener_thickness.SetToolTip("Thickness of stiffener material in mm (typically 0.1-0.3mm)")
         self.spin_stiffener_thickness.Bind(wx.EVT_SPINCTRLDOUBLE, self.on_settings_changed)
         stiff_thick_sizer.Add(self.spin_stiffener_thickness, 0, wx.RIGHT, 3)
         stiff_thick_sizer.Add(wx.StaticText(control_panel, label="mm"), 0, wx.ALIGN_CENTER_VERTICAL)
@@ -644,6 +654,7 @@ class FlexViewerFrame(wx.Frame):
         stiff_top_sizer = wx.BoxSizer(wx.HORIZONTAL)
         stiff_top_sizer.Add(wx.StaticText(control_panel, label="Top layer:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
         self.choice_stiffener_layer_top = wx.Choice(control_panel, choices=layer_choices_with_none, size=(80, -1))
+        self.choice_stiffener_layer_top.SetToolTip("Layer containing stiffener outlines for top side of PCB")
         if self.config.stiffener_layer_top and self.config.stiffener_layer_top in self.available_layers:
             self.choice_stiffener_layer_top.SetSelection(self.available_layers.index(self.config.stiffener_layer_top) + 1)
         else:
@@ -656,6 +667,7 @@ class FlexViewerFrame(wx.Frame):
         stiff_bottom_sizer = wx.BoxSizer(wx.HORIZONTAL)
         stiff_bottom_sizer.Add(wx.StaticText(control_panel, label="Bottom layer:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
         self.choice_stiffener_layer_bottom = wx.Choice(control_panel, choices=layer_choices_with_none, size=(80, -1))
+        self.choice_stiffener_layer_bottom.SetToolTip("Layer containing stiffener outlines for bottom side of PCB")
         if self.config.stiffener_layer_bottom and self.config.stiffener_layer_bottom in self.available_layers:
             self.choice_stiffener_layer_bottom.SetSelection(self.available_layers.index(self.config.stiffener_layer_bottom) + 1)
         else:
@@ -694,10 +706,12 @@ class FlexViewerFrame(wx.Frame):
         btn_sizer = wx.BoxSizer(wx.HORIZONTAL)
 
         btn_refresh = wx.Button(control_panel, label="Refresh")
+        btn_refresh.SetToolTip("Reload PCB data from file and regenerate mesh")
         btn_refresh.Bind(wx.EVT_BUTTON, self.on_refresh)
         btn_sizer.Add(btn_refresh, 1, wx.ALL, 3)
 
         btn_reset = wx.Button(control_panel, label="Reset View")
+        btn_reset.SetToolTip("Reset camera to default position and zoom")
         btn_reset.Bind(wx.EVT_BUTTON, self.on_reset_view)
         btn_sizer.Add(btn_reset, 1, wx.ALL, 3)
 
@@ -707,10 +721,12 @@ class FlexViewerFrame(wx.Frame):
         export_sizer = wx.BoxSizer(wx.HORIZONTAL)
 
         btn_export_obj = wx.Button(control_panel, label="Export OBJ")
+        btn_export_obj.SetToolTip("Export mesh to Wavefront OBJ format (for Blender, etc.)")
         btn_export_obj.Bind(wx.EVT_BUTTON, self.on_export_obj)
         export_sizer.Add(btn_export_obj, 1, wx.ALL, 3)
 
         btn_export_stl = wx.Button(control_panel, label="Export STL")
+        btn_export_stl.SetToolTip("Export mesh to STL format (for 3D printing)")
         btn_export_stl.Bind(wx.EVT_BUTTON, self.on_export_stl)
         export_sizer.Add(btn_export_stl, 1, wx.ALL, 3)
 
@@ -720,6 +736,7 @@ class FlexViewerFrame(wx.Frame):
         export_sizer2 = wx.BoxSizer(wx.HORIZONTAL)
 
         btn_export_step = wx.Button(control_panel, label="Export STEP")
+        btn_export_step.SetToolTip("Export to STEP format for CAD tools (requires command-line)")
         btn_export_step.Bind(wx.EVT_BUTTON, self.on_export_step)
         export_sizer2.Add(btn_export_step, 1, wx.ALL, 3)
 
@@ -727,6 +744,7 @@ class FlexViewerFrame(wx.Frame):
 
         # Save settings button
         btn_save_settings = wx.Button(control_panel, label="Save Settings")
+        btn_save_settings.SetToolTip("Save current settings to PCB config file for future sessions")
         btn_save_settings.Bind(wx.EVT_BUTTON, self.on_save_settings)
         right_column.Add(btn_save_settings, 0, wx.ALL | wx.EXPAND, 5)
 
