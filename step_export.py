@@ -41,12 +41,13 @@ def mesh_to_step(mesh, filename: str, tolerance: float = 0.01, max_faces: int = 
     """
     Export a mesh to STEP format.
 
-    Creates a shell solid from mesh faces and exports to STEP.
+    Creates faces from mesh and exports to STEP. For meshes with many faces,
+    sewing is skipped to avoid extremely long processing times.
 
     Args:
         mesh: Mesh object with vertices and faces
         filename: Output STEP file path
-        tolerance: Sewing tolerance for joining faces
+        tolerance: Sewing tolerance for joining faces (only used for small meshes)
         max_faces: Maximum number of faces to export (for performance)
 
     Returns:
@@ -65,13 +66,22 @@ def mesh_to_step(mesh, filename: str, tolerance: float = 0.01, max_faces: int = 
         print(f"Warning: Mesh has {total_faces} faces, limiting to {max_faces} for performance")
         print("Consider reducing bend subdivisions or using coarser mesh for STEP export")
 
-    try:
-        # Create a sewing object to join all faces
-        sewing = BRepBuilderAPI_Sewing(tolerance)
+    # Sewing is O(n²) and freezes with many faces - only use for small meshes
+    use_sewing = total_faces <= 200
 
-        faces_added = 0
+    try:
         faces_to_process = mesh.faces[:max_faces] if total_faces > max_faces else mesh.faces
         num_to_process = len(faces_to_process)
+
+        if use_sewing:
+            # Create a sewing object to join all faces (only for small meshes)
+            sewing = BRepBuilderAPI_Sewing(tolerance)
+
+        builder = BRep_Builder()
+        compound = TopoDS_Compound()
+        builder.MakeCompound(compound)
+
+        faces_added = 0
 
         for idx, face_indices in enumerate(faces_to_process):
             # Progress indicator for large meshes
@@ -100,28 +110,34 @@ def mesh_to_step(mesh, filename: str, tolerance: float = 0.01, max_faces: int = 
             # Create face from wire
             face_maker = BRepBuilderAPI_MakeFace(wire, True)  # True = only plane
             if face_maker.IsDone():
-                sewing.Add(face_maker.Face())
+                face = face_maker.Face()
+                if use_sewing:
+                    sewing.Add(face)
+                else:
+                    builder.Add(compound, face)
                 faces_added += 1
 
         if faces_added == 0:
             print("No valid faces could be created")
             return False
 
-        # Perform sewing
-        sewing.Perform()
-        sewn_shape = sewing.SewedShape()
+        if use_sewing:
+            # Perform sewing for small meshes
+            print("Sewing faces...")
+            sewing.Perform()
+            sewn_shape = sewing.SewedShape()
 
-        # Try to create a solid from the shell
-        builder = BRep_Builder()
-
-        # Export using build123d
-        if hasattr(sewn_shape, 'wrapped'):
-            shape_to_export = sewn_shape
+            # Export using build123d
+            if hasattr(sewn_shape, 'wrapped'):
+                shape_to_export = sewn_shape
+            else:
+                # Wrap in Compound for export
+                compound = TopoDS_Compound()
+                builder.MakeCompound(compound)
+                builder.Add(compound, sewn_shape)
+                shape_to_export = Compound(compound)
         else:
-            # Wrap in Compound for export
-            compound = TopoDS_Compound()
-            builder.MakeCompound(compound)
-            builder.Add(compound, sewn_shape)
+            # Skip sewing for large meshes - export as compound of faces
             shape_to_export = Compound(compound)
 
         # Export to STEP
