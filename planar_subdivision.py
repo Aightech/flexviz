@@ -635,18 +635,35 @@ def hole_crosses_cutting_lines(
     """
     Check if a hole crosses any of the cutting lines.
 
-    A hole crosses a cutting line if any of its edges have endpoints
-    on opposite sides of the line.
+    A hole crosses a cutting line if any of its edges actually intersect
+    the finite cutting line segment (not just the infinite line).
     """
-    for line_eq, _, _ in cutting_lines:
+    for line_eq, p1, p2 in cutting_lines:
+        # Get finite extent of cutting line
+        cl_min_x, cl_max_x = min(p1[0], p2[0]), max(p1[0], p2[0])
+        cl_min_y, cl_max_y = min(p1[1], p2[1]), max(p1[1], p2[1])
+
         n = len(hole)
         for i in range(n):
             seg_start = hole[i]
             seg_end = hole[(i + 1) % n]
+
+            # Check if hole edge crosses the infinite line
             d1 = signed_distance_to_line(seg_start, line_eq)
             d2 = signed_distance_to_line(seg_end, line_eq)
+
             if d1 * d2 < -1e-10:
-                return True
+                # Edge crosses infinite line - compute intersection point
+                t = d1 / (d1 - d2)
+                ix = seg_start[0] + t * (seg_end[0] - seg_start[0])
+                iy = seg_start[1] + t * (seg_end[1] - seg_start[1])
+
+                # Check if intersection is within the FINITE cutting line extent
+                tol = 0.01
+                if (cl_min_x - tol <= ix <= cl_max_x + tol and
+                        cl_min_y - tol <= iy <= cl_max_y + tol):
+                    return True
+
     return False
 
 
