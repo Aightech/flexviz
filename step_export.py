@@ -273,144 +273,32 @@ def unify_same_domain(shape: TopoDS_Shape, tolerance: float = 1e-6) -> TopoDS_Sh
         return shape
 
 
-def _create_cylindrical_bend_face(
-    axis_point: tuple,
-    axis_dir: tuple,
-    radius: float,
-    angle: float,
-    width: float,
-    thickness: float,
-    is_inner: bool = True
-) -> TopoDS_Face:
-    """
-    Create a cylindrical face for a bend zone.
-
-    Args:
-        axis_point: Point on the cylinder axis (3D)
-        axis_dir: Direction of the cylinder axis (3D unit vector)
-        radius: Bend radius
-        angle: Bend angle in radians
-        width: Width along the axis (extent of the face)
-        thickness: Board thickness (for inner/outer radius)
-        is_inner: If True, create inner surface; if False, create outer
-
-    Returns:
-        OCC TopoDS_Face representing the cylindrical surface
-    """
-    # Adjust radius for inner/outer surface
-    r = radius if is_inner else radius + thickness
-
-    # Create cylinder axis
-    ax2 = gp_Ax2(
-        gp_Pnt(axis_point[0], axis_point[1], axis_point[2]),
-        gp_Dir(axis_dir[0], axis_dir[1], axis_dir[2])
-    )
-
-    # Create cylindrical surface
-    cyl_surface = Geom_CylindricalSurface(ax2, r)
-
-    # Create the bounded face on this surface
-    # Parameters: u (angle), v (along axis)
-    # u: 0 to angle
-    # v: -width/2 to width/2
-    u_start = 0.0
-    u_end = abs(angle)
-    v_start = -width / 2
-    v_end = width / 2
-
-    # Note: For negative angles, we might need to flip
-    if angle < 0:
-        u_start, u_end = -abs(angle), 0.0
-
-    face_maker = BRepBuilderAPI_MakeFace(
-        cyl_surface,
-        u_start, u_end,
-        v_start, v_end,
-        1e-6
-    )
-
-    if face_maker.IsDone():
-        return face_maker.Face()
-    return None
-
-
-def _transform_point_3d(point_2d: tuple, recipe: list) -> tuple:
-    """Transform a 2D point to 3D using fold recipe."""
-    try:
-        from bend_transform import transform_point
-    except ImportError:
-        from .bend_transform import transform_point
-
-    return transform_point(point_2d, recipe)
-
-
-def _get_fold_axis_3d(fold, recipe_before: list) -> tuple:
-    """
-    Get the 3D position and direction of a fold axis after previous transformations.
-
-    Returns:
-        (axis_point_3d, axis_dir_3d, perp_dir_3d, up_dir_3d)
-    """
-    try:
-        from bend_transform import (
-            transform_point, compute_normal, FoldDefinition,
-            _rotation_matrix_around_axis, _multiply_matrices, _apply_rotation
-        )
-    except ImportError:
-        from .bend_transform import (
-            transform_point, compute_normal, FoldDefinition,
-            _rotation_matrix_around_axis, _multiply_matrices, _apply_rotation
-        )
-
-    # Transform fold center through previous folds
-    axis_point_3d = transform_point(fold.center, recipe_before)
-
-    # Compute cumulative rotation from previous folds
-    rot = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
-    for entry in recipe_before:
-        prev_fold = entry[0]
-        classification = entry[1]
-        entered_from_back = entry[2] if len(entry) > 2 else False
-
-        if classification == "AFTER":
-            fold_axis_3d = _apply_rotation(rot, (prev_fold.axis[0], prev_fold.axis[1], 0.0))
-            rotation_angle = -prev_fold.angle if entered_from_back else prev_fold.angle
-            fold_rot = _rotation_matrix_around_axis(fold_axis_3d, rotation_angle)
-            rot = _multiply_matrices(fold_rot, rot)
-
-    # Transform fold axis direction
-    axis_dir_3d = _apply_rotation(rot, (fold.axis[0], fold.axis[1], 0.0))
-    perp_dir_3d = _apply_rotation(rot, (fold.perp[0], fold.perp[1], 0.0))
-    up_dir_3d = _apply_rotation(rot, (0.0, 0.0, 1.0))
-
-    return axis_point_3d, axis_dir_3d, perp_dir_3d, up_dir_3d
-
-
-def board_geometry_to_step_cylindrical(
+def board_geometry_to_step_optimized(
     board_geometry,
     markers: list = None,
     filename: str = "output.step",
     include_traces: bool = False,
     include_pads: bool = False,
     merge_faces: bool = True,
-    num_bend_subdivisions: int = 1
+    num_bend_subdivisions: int = 4
 ) -> bool:
     """
-    Export board geometry to STEP format with true cylindrical bend surfaces.
+    Export board geometry to STEP with optimized face merging.
 
-    This creates proper CAD geometry:
-    - Flat regions: planar faces with proper solid extrusion
-    - Bend zones: true cylindrical shell sections
-    - Post-processes to merge adjacent coplanar faces
+    Creates mesh-based geometry but with coplanar face merging for flat regions,
+    reducing STEP file size while maintaining accurate bent geometry.
+
+    Note: Face merging is most effective with fewer subdivisions (1-4).
+    Higher subdivisions create many small faces that can't be easily merged.
 
     Args:
         board_geometry: BoardGeometry object
         markers: List of FoldMarker objects
         filename: Output STEP file path
-        include_traces: Include copper traces (not yet implemented for cylindrical)
-        include_pads: Include pads (not yet implemented for cylindrical)
+        include_traces: Include copper traces
+        include_pads: Include pads
         merge_faces: Apply face unification to reduce file size
-        num_bend_subdivisions: Subdivisions for bend zones (1 = true cylinder)
+        num_bend_subdivisions: Subdivisions for bend zones (fewer = smaller file)
 
     Returns:
         True if export successful, False otherwise
@@ -419,222 +307,40 @@ def board_geometry_to_step_cylindrical(
         print("STEP export not available: build123d/OCC not installed")
         return False
 
-    if not _occ_cylindrical_available:
-        print("Cylindrical export not available, falling back to mesh export")
-        return board_geometry_to_step(
-            board_geometry, markers, filename,
-            include_traces, include_pads, num_bend_subdivisions
+    try:
+        # Import mesh generation
+        try:
+            from .mesh import create_board_geometry_mesh
+        except ImportError:
+            from mesh import create_board_geometry_mesh
+
+        # Generate mesh with specified subdivisions
+        mesh = create_board_geometry_mesh(
+            board_geometry,
+            markers=markers,
+            include_traces=include_traces,
+            include_pads=include_pads,
+            include_components=False,
+            subdivide_length=2.0,  # Coarser for smaller files
+            num_bend_subdivisions=num_bend_subdivisions,
+            apply_bend=True
         )
 
-    try:
-        # Import required modules
-        try:
-            from .planar_subdivision import split_board_into_regions, Region
-            from .bend_transform import FoldDefinition, transform_point, compute_normal
-        except ImportError:
-            from planar_subdivision import split_board_into_regions, Region
-            from bend_transform import FoldDefinition, transform_point, compute_normal
-
-        outline = board_geometry.outline
-        thickness = board_geometry.thickness
-        cutouts = board_geometry.cutouts or []
-
-        if not outline.vertices or len(outline.vertices) < 3:
-            print("Invalid board outline")
+        if not mesh.vertices or not mesh.faces:
+            print("Empty mesh generated")
             return False
 
-        # Convert to 2D coordinate lists
-        outline_verts = [(v[0], v[1]) for v in outline.vertices]
-        cutout_verts = [[(v[0], v[1]) for v in c.vertices] for c in cutouts]
+        print(f"Generated mesh: {len(mesh.faces)} faces")
 
-        # Split board into regions
-        if markers:
-            regions = split_board_into_regions(
-                outline_verts, cutout_verts, markers,
-                num_bend_subdivisions=num_bend_subdivisions
-            )
-        else:
-            # No bends - single flat region
-            single_region = Region(
-                index=0,
-                outline=outline_verts,
-                holes=cutout_verts,
-                fold_recipe=[]
-            )
-            regions = [single_region]
-
-        builder = BRep_Builder()
-        compound = TopoDS_Compound()
-        builder.MakeCompound(compound)
-
-        faces_created = 0
-
-        for region in regions:
-            # Get fold recipe for this region
-            recipe = []
-            if hasattr(region, 'fold_recipe') and region.fold_recipe:
-                for entry in region.fold_recipe:
-                    fm = entry[0]
-                    classification = entry[1]
-                    entered_from_back = entry[2] if len(entry) > 2 else False
-                    recipe.append((FoldDefinition.from_marker(fm), classification, entered_from_back))
-
-            # Check if this is a bend zone region (has IN_ZONE classification)
-            is_bend_zone = any(entry[1] == "IN_ZONE" for entry in recipe)
-
-            if is_bend_zone and len(recipe) > 0:
-                # Get the IN_ZONE fold
-                in_zone_entry = next((e for e in recipe if e[1] == "IN_ZONE"), None)
-                if in_zone_entry:
-                    fold = in_zone_entry[0]
-                    entered_from_back = in_zone_entry[2]
-
-                    # Get recipe up to this fold (previous AFTER folds)
-                    recipe_before = [e for e in recipe if e[1] == "AFTER"]
-
-                    # Get 3D transformation of fold axis
-                    axis_point_3d, axis_dir_3d, perp_dir_3d, up_dir_3d = _get_fold_axis_3d(
-                        fold, recipe_before
-                    )
-
-                    # Compute cylinder axis position (at BEFORE boundary)
-                    hw = fold.zone_width / 2
-                    R = fold.radius
-
-                    # Cylinder axis is at perp_dist = -hw from fold center
-                    if not entered_from_back:
-                        cyl_axis_point = (
-                            axis_point_3d[0] - hw * perp_dir_3d[0],
-                            axis_point_3d[1] - hw * perp_dir_3d[1],
-                            axis_point_3d[2] - hw * perp_dir_3d[2]
-                        )
-                    else:
-                        cyl_axis_point = (
-                            axis_point_3d[0] + hw * perp_dir_3d[0],
-                            axis_point_3d[1] + hw * perp_dir_3d[1],
-                            axis_point_3d[2] + hw * perp_dir_3d[2]
-                        )
-
-                    # Compute width of this region along fold axis
-                    # Use the region outline to determine extent
-                    min_along = float('inf')
-                    max_along = float('inf') * -1
-                    for v in region.outline:
-                        dx = v[0] - fold.center[0]
-                        dy = v[1] - fold.center[1]
-                        along = dx * fold.axis[0] + dy * fold.axis[1]
-                        min_along = min(min_along, along)
-                        max_along = max(max_along, along)
-
-                    width = max_along - min_along
-
-                    # Create cylindrical faces (top and bottom)
-                    try:
-                        # Inner surface (top of PCB)
-                        inner_face = _create_cylindrical_bend_face(
-                            cyl_axis_point, axis_dir_3d,
-                            R, fold.angle, width, thickness, is_inner=True
-                        )
-                        if inner_face:
-                            builder.Add(compound, inner_face)
-                            faces_created += 1
-
-                        # Outer surface (bottom of PCB)
-                        outer_face = _create_cylindrical_bend_face(
-                            cyl_axis_point, axis_dir_3d,
-                            R, fold.angle, width, thickness, is_inner=False
-                        )
-                        if outer_face:
-                            builder.Add(compound, outer_face)
-                            faces_created += 1
-                    except Exception as e:
-                        print(f"Cylindrical face creation failed: {e}, using mesh fallback")
-                        # Fall back to mesh-based export for this region
-                        pass
-            else:
-                # Flat region - create planar faces
-                # Transform outline vertices to 3D
-                top_3d = []
-                bottom_3d = []
-
-                for v in region.outline:
-                    p3d = transform_point(v, recipe)
-                    normal = compute_normal(v, recipe)
-                    top_3d.append(p3d)
-                    bottom_3d.append((
-                        p3d[0] - normal[0] * thickness,
-                        p3d[1] - normal[1] * thickness,
-                        p3d[2] - normal[2] * thickness
-                    ))
-
-                # Create top face
-                if len(top_3d) >= 3:
-                    polygon = BRepBuilderAPI_MakePolygon()
-                    for p in top_3d:
-                        polygon.Add(gp_Pnt(float(p[0]), float(p[1]), float(p[2])))
-                    polygon.Close()
-
-                    if polygon.IsDone():
-                        wire = polygon.Wire()
-                        face_maker = BRepBuilderAPI_MakeFace(wire, True)
-                        if face_maker.IsDone():
-                            builder.Add(compound, face_maker.Face())
-                            faces_created += 1
-
-                # Create bottom face
-                if len(bottom_3d) >= 3:
-                    polygon = BRepBuilderAPI_MakePolygon()
-                    # Reverse order for correct normal direction
-                    for p in reversed(bottom_3d):
-                        polygon.Add(gp_Pnt(float(p[0]), float(p[1]), float(p[2])))
-                    polygon.Close()
-
-                    if polygon.IsDone():
-                        wire = polygon.Wire()
-                        face_maker = BRepBuilderAPI_MakeFace(wire, True)
-                        if face_maker.IsDone():
-                            builder.Add(compound, face_maker.Face())
-                            faces_created += 1
-
-                # Create side faces
-                n = len(top_3d)
-                for i in range(n):
-                    j = (i + 1) % n
-                    pts = [top_3d[i], top_3d[j], bottom_3d[j], bottom_3d[i]]
-
-                    polygon = BRepBuilderAPI_MakePolygon()
-                    for p in pts:
-                        polygon.Add(gp_Pnt(float(p[0]), float(p[1]), float(p[2])))
-                    polygon.Close()
-
-                    if polygon.IsDone():
-                        wire = polygon.Wire()
-                        face_maker = BRepBuilderAPI_MakeFace(wire, True)
-                        if face_maker.IsDone():
-                            builder.Add(compound, face_maker.Face())
-                            faces_created += 1
-
-        if faces_created == 0:
-            print("No faces created")
-            return False
-
-        # Apply face unification to merge coplanar faces
-        shape_to_export = compound
-        if merge_faces:
-            print("Merging adjacent coplanar faces...")
-            shape_to_export = unify_same_domain(compound)
-
-        # Export to STEP
-        export_step(Compound(shape_to_export), filename)
-
-        print(f"Exported {faces_created} faces to {filename}")
-        if merge_faces:
-            print("(Coplanar faces merged to reduce file size)")
-
-        return True
+        # Use unified export with face merging
+        return mesh_to_step_unified(
+            mesh, filename,
+            max_faces=len(mesh.faces),  # Use all faces
+            merge_faces=merge_faces
+        )
 
     except Exception as e:
-        print(f"Cylindrical STEP export failed: {e}")
+        print(f"Optimized STEP export failed: {e}")
         import traceback
         traceback.print_exc()
         return False
