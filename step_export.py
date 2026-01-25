@@ -273,6 +273,435 @@ def unify_same_domain(shape: TopoDS_Shape, tolerance: float = 1e-6) -> TopoDS_Sh
         return shape
 
 
+def board_to_step_direct(
+    board_geometry,
+    markers: list = None,
+    filename: str = "output.step",
+    num_bend_subdivisions: int = 1
+) -> bool:
+    """
+    Export board geometry to STEP using direct CAD construction.
+
+    Instead of triangulating and converting, this creates native CAD geometry:
+    - Flat regions: extruded 2D profiles (planar faces)
+    - Bend zones: swept profiles along circular arcs (cylindrical faces)
+
+    This produces much smaller STEP files with proper parametric surfaces.
+
+    Args:
+        board_geometry: BoardGeometry object
+        markers: List of FoldMarker objects
+        filename: Output STEP file path
+        num_bend_subdivisions: Subdivisions in bend zones (1 = single arc)
+
+    Returns:
+        True if export successful, False otherwise
+    """
+    if not _build123d_available:
+        print("STEP export not available: build123d/OCC not installed")
+        return False
+
+    try:
+        from build123d import (
+            BuildPart, BuildSketch, BuildLine,
+            Polygon as B3DPolygon, Rectangle, Circle,
+            extrude, sweep, make_face, add,
+            Axis, Mode, Align, Rotation,
+            Polyline, Line, ThreePointArc, Spline
+        )
+
+        # Import our modules
+        try:
+            from .planar_subdivision import split_board_into_regions, Region
+            from .bend_transform import FoldDefinition, transform_point, compute_normal
+            from .bend_transform import _rotation_matrix_around_axis, _apply_rotation
+        except ImportError:
+            from planar_subdivision import split_board_into_regions, Region
+            from bend_transform import FoldDefinition, transform_point, compute_normal
+            from bend_transform import _rotation_matrix_around_axis, _apply_rotation
+
+        outline = board_geometry.outline
+        thickness = board_geometry.thickness
+        cutouts = board_geometry.cutouts or []
+
+        if not outline.vertices or len(outline.vertices) < 3:
+            print("Invalid board outline")
+            return False
+
+        # Convert to 2D coordinate lists
+        outline_verts = [(v[0], v[1]) for v in outline.vertices]
+        cutout_verts = [[(v[0], v[1]) for v in c.vertices] for c in cutouts]
+
+        # Split board into regions
+        if markers:
+            regions = split_board_into_regions(
+                outline_verts, cutout_verts, markers,
+                num_bend_subdivisions=num_bend_subdivisions
+            )
+        else:
+            # No bends - single flat region
+            single_region = Region(
+                index=0,
+                outline=outline_verts,
+                holes=cutout_verts,
+                fold_recipe=[]
+            )
+            regions = [single_region]
+
+        print(f"Processing {len(regions)} regions...")
+
+        all_parts = []
+
+        for region in regions:
+            # Build fold recipe with FoldDefinitions
+            recipe = []
+            if hasattr(region, 'fold_recipe') and region.fold_recipe:
+                for entry in region.fold_recipe:
+                    fm = entry[0]
+                    classification = entry[1]
+                    entered_from_back = entry[2] if len(entry) > 2 else False
+                    recipe.append((FoldDefinition.from_marker(fm), classification, entered_from_back))
+
+            # Check if this is a bend zone
+            is_bend_zone = any(entry[1] == "IN_ZONE" for entry in recipe)
+
+            if is_bend_zone:
+                # Create bend zone geometry using sweep
+                part = _create_bend_zone_solid(region, recipe, thickness)
+                if part:
+                    all_parts.append(part)
+            else:
+                # Create flat region geometry using extrusion
+                part = _create_flat_region_solid(region, recipe, thickness)
+                if part:
+                    all_parts.append(part)
+
+        if not all_parts:
+            print("No geometry created")
+            return False
+
+        # Combine all parts
+        print(f"Combining {len(all_parts)} parts...")
+
+        if len(all_parts) == 1:
+            result = all_parts[0]
+        else:
+            # Create compound of all parts
+            builder = BRep_Builder()
+            compound = TopoDS_Compound()
+            builder.MakeCompound(compound)
+            for part in all_parts:
+                if hasattr(part, 'wrapped'):
+                    builder.Add(compound, part.wrapped)
+                else:
+                    builder.Add(compound, part)
+            result = Compound(compound)
+
+        # Export
+        export_step(result, filename)
+        file_size = os.path.getsize(filename)
+        print(f"Exported to {filename} ({file_size:,} bytes)")
+
+        return True
+
+    except Exception as e:
+        print(f"Direct STEP export failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def _create_flat_region_solid(region, recipe: list, thickness: float):
+    """
+    Create a solid for a flat region by extruding its 2D outline.
+
+    For flat regions (no bend or after a bend), we create the geometry
+    directly in 3D space using the transformed vertices.
+    """
+    try:
+        # Import transform functions
+        try:
+            from .bend_transform import transform_point, compute_normal
+        except ImportError:
+            from bend_transform import transform_point, compute_normal
+
+        # Get the 2D outline
+        outline_2d = [(v[0], v[1]) for v in region.outline]
+        holes_2d = [[(v[0], v[1]) for v in h] for h in region.holes] if region.holes else []
+
+        if len(outline_2d) < 3:
+            return None
+
+        # Transform all vertices to 3D
+        top_3d = []
+        bottom_3d = []
+        for v in outline_2d:
+            p3d = transform_point(v, recipe)
+            normal = compute_normal(v, recipe)
+            top_3d.append(p3d)
+            bottom_3d.append((
+                p3d[0] - normal[0] * thickness,
+                p3d[1] - normal[1] * thickness,
+                p3d[2] - normal[2] * thickness
+            ))
+
+        # Transform holes
+        holes_top_3d = []
+        holes_bottom_3d = []
+        for hole in holes_2d:
+            hole_top = []
+            hole_bottom = []
+            for v in hole:
+                p3d = transform_point(v, recipe)
+                normal = compute_normal(v, recipe)
+                hole_top.append(p3d)
+                hole_bottom.append((
+                    p3d[0] - normal[0] * thickness,
+                    p3d[1] - normal[1] * thickness,
+                    p3d[2] - normal[2] * thickness
+                ))
+            holes_top_3d.append(hole_top)
+            holes_bottom_3d.append(hole_bottom)
+
+        # Create faces using OCC directly
+        builder = BRep_Builder()
+        shell = TopoDS_Shell()
+        builder.MakeShell(shell)
+
+        # Top face
+        top_face = _make_polygon_face(top_3d, holes_top_3d)
+        if top_face:
+            builder.Add(shell, top_face)
+
+        # Bottom face (reversed winding)
+        bottom_face = _make_polygon_face(list(reversed(bottom_3d)),
+                                         [list(reversed(h)) for h in holes_bottom_3d])
+        if bottom_face:
+            builder.Add(shell, bottom_face)
+
+        # Side faces (outer boundary)
+        n = len(top_3d)
+        for i in range(n):
+            j = (i + 1) % n
+            side_pts = [top_3d[i], top_3d[j], bottom_3d[j], bottom_3d[i]]
+            side_face = _make_polygon_face(side_pts)
+            if side_face:
+                builder.Add(shell, side_face)
+
+        # Side faces for holes (inner walls)
+        for hole_top, hole_bottom in zip(holes_top_3d, holes_bottom_3d):
+            nh = len(hole_top)
+            for i in range(nh):
+                j = (i + 1) % nh
+                # Reversed winding for inner walls
+                side_pts = [hole_top[j], hole_top[i], hole_bottom[i], hole_bottom[j]]
+                side_face = _make_polygon_face(side_pts)
+                if side_face:
+                    builder.Add(shell, side_face)
+
+        return shell
+
+    except Exception as e:
+        print(f"Flat region creation failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
+def _make_polygon_face(vertices_3d: list, holes_3d: list = None) -> TopoDS_Face:
+    """Create a planar face from 3D vertices with optional holes."""
+    if len(vertices_3d) < 3:
+        return None
+
+    try:
+        # Create outer wire
+        polygon = BRepBuilderAPI_MakePolygon()
+        for p in vertices_3d:
+            polygon.Add(gp_Pnt(float(p[0]), float(p[1]), float(p[2])))
+        polygon.Close()
+
+        if not polygon.IsDone():
+            return None
+
+        wire = polygon.Wire()
+
+        # Create face
+        face_maker = BRepBuilderAPI_MakeFace(wire, True)  # True = planar
+        if not face_maker.IsDone():
+            return None
+
+        face = face_maker.Face()
+
+        # Add holes if any
+        if holes_3d:
+            for hole in holes_3d:
+                if len(hole) >= 3:
+                    hole_poly = BRepBuilderAPI_MakePolygon()
+                    for p in hole:
+                        hole_poly.Add(gp_Pnt(float(p[0]), float(p[1]), float(p[2])))
+                    hole_poly.Close()
+                    if hole_poly.IsDone():
+                        hole_wire = hole_poly.Wire()
+                        face_maker = BRepBuilderAPI_MakeFace(face, hole_wire)
+                        if face_maker.IsDone():
+                            face = face_maker.Face()
+
+        return face
+
+    except Exception:
+        return None
+
+
+def _create_bend_zone_solid(region, recipe: list, thickness: float):
+    """
+    Create a solid for a bend zone by sweeping a profile along an arc.
+
+    The bend zone is a cylindrical shell section created by sweeping
+    the board cross-section along a circular arc.
+    """
+    from build123d import (
+        BuildPart, BuildSketch, BuildLine,
+        Rectangle, sweep, ThreePointArc,
+        Plane, Vector, Align
+    )
+
+    try:
+        # Find the IN_ZONE fold
+        in_zone_entry = next((e for e in recipe if e[1] == "IN_ZONE"), None)
+        if not in_zone_entry:
+            return None
+
+        fold = in_zone_entry[0]
+        entered_from_back = in_zone_entry[2]
+
+        # Get previous AFTER folds for cumulative transformation
+        recipe_before = [(e[0], e[1], e[2] if len(e) > 2 else False)
+                         for e in recipe if e[1] == "AFTER"]
+
+        # Import transform functions
+        try:
+            from .bend_transform import (
+                transform_point, compute_normal,
+                _rotation_matrix_around_axis, _multiply_matrices, _apply_rotation
+            )
+        except ImportError:
+            from bend_transform import (
+                transform_point, compute_normal,
+                _rotation_matrix_around_axis, _multiply_matrices, _apply_rotation
+            )
+
+        # Compute bend parameters
+        R = fold.radius  # Inner radius
+        angle = fold.angle  # Bend angle in radians
+        hw = fold.zone_width / 2
+
+        # Compute width of this region along the fold axis
+        min_along = float('inf')
+        max_along = float('-inf')
+        for v in region.outline:
+            dx = v[0] - fold.center[0]
+            dy = v[1] - fold.center[1]
+            along = dx * fold.axis[0] + dy * fold.axis[1]
+            min_along = min(min_along, along)
+            max_along = max(max_along, along)
+
+        width = max_along - min_along
+        if width <= 0:
+            return None
+
+        # Center along the axis
+        center_along = (min_along + max_along) / 2
+
+        # Compute cumulative rotation matrix from previous folds
+        rot = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+        for entry in recipe_before:
+            prev_fold = entry[0]
+            classification = entry[1]
+            efb = entry[2] if len(entry) > 2 else False
+            if classification == "AFTER":
+                fold_axis_3d = _apply_rotation(rot, (prev_fold.axis[0], prev_fold.axis[1], 0.0))
+                rotation_angle = -prev_fold.angle if efb else prev_fold.angle
+                fold_rot = _rotation_matrix_around_axis(fold_axis_3d, rotation_angle)
+                rot = _multiply_matrices(fold_rot, rot)
+
+        # Get 3D directions
+        axis_3d = _apply_rotation(rot, (fold.axis[0], fold.axis[1], 0.0))
+        perp_3d = _apply_rotation(rot, (fold.perp[0], fold.perp[1], 0.0))
+        up_3d = _apply_rotation(rot, (0.0, 0.0, 1.0))
+
+        # Get the 3D transformation at the start of the bend (centered)
+        # The bend starts at perp_dist = -hw from fold center
+        start_2d = (
+            fold.center[0] - hw * fold.perp[0] + center_along * fold.axis[0],
+            fold.center[1] - hw * fold.perp[1] + center_along * fold.axis[1]
+        )
+        start_3d = transform_point(start_2d, recipe_before)
+
+        # Arc path points (on the centerline of the board)
+        cyl_center = Vector(start_3d[0], start_3d[1], start_3d[2])
+
+        # Handle back entry
+        effective_angle = angle
+        if entered_from_back:
+            effective_angle = -angle
+
+        # Middle point of arc (at half angle)
+        mid_angle = effective_angle / 2
+        mid_offset_perp = R * math.sin(abs(mid_angle))
+        mid_offset_up = R * (1 - math.cos(abs(mid_angle)))
+        if effective_angle < 0:
+            mid_offset_up = -mid_offset_up
+
+        arc_mid = Vector(
+            cyl_center.X + mid_offset_perp * perp_3d[0] + mid_offset_up * up_3d[0],
+            cyl_center.Y + mid_offset_perp * perp_3d[1] + mid_offset_up * up_3d[1],
+            cyl_center.Z + mid_offset_perp * perp_3d[2] + mid_offset_up * up_3d[2]
+        )
+
+        # End point of arc (at full angle)
+        end_offset_perp = R * math.sin(abs(effective_angle))
+        end_offset_up = R * (1 - math.cos(abs(effective_angle)))
+        if effective_angle < 0:
+            end_offset_up = -end_offset_up
+
+        arc_end = Vector(
+            cyl_center.X + end_offset_perp * perp_3d[0] + end_offset_up * up_3d[0],
+            cyl_center.Y + end_offset_perp * perp_3d[1] + end_offset_up * up_3d[1],
+            cyl_center.Z + end_offset_perp * perp_3d[2] + end_offset_up * up_3d[2]
+        )
+
+        # Create the sweep path (three-point arc)
+        with BuildLine() as path:
+            ThreePointArc(cyl_center, arc_mid, arc_end)
+
+        # Create the profile (rectangle in the plane perpendicular to path start)
+        # Profile plane: normal is perp_3d (sweep direction at start)
+        # X direction: axis_3d (along fold)
+        # Y direction: up_3d (board thickness direction)
+        profile_plane = Plane(
+            origin=cyl_center,
+            x_dir=Vector(axis_3d[0], axis_3d[1], axis_3d[2]),
+            z_dir=Vector(perp_3d[0], perp_3d[1], perp_3d[2])
+        )
+
+        # Profile centered on the path, extending width/2 in each direction along axis
+        # and thickness in the -up direction (board thickness)
+        with BuildSketch(profile_plane) as profile:
+            Rectangle(width, thickness, align=(Align.CENTER, Align.MAX))
+
+        # Sweep the profile along the arc
+        with BuildPart() as part:
+            sweep(profile.sketch, path=path.line)
+
+        return part.part
+
+    except Exception as e:
+        print(f"Bend zone creation failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
 def board_geometry_to_step_optimized(
     board_geometry,
     markers: list = None,

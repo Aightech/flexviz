@@ -35,7 +35,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from step_export import (
     is_step_export_available, mesh_to_step, mesh_to_step_unified,
-    board_geometry_to_step_optimized
+    board_geometry_to_step_optimized, board_to_step_direct
 )
 from mesh import create_board_geometry_mesh
 from geometry import extract_geometry
@@ -86,6 +86,8 @@ Examples:
                         help='Merge adjacent coplanar faces (works best with --subdivisions 1-4, mesh ≤2000 faces)')
     parser.add_argument('--no-merge-faces', dest='merge_faces', action='store_false',
                         help='Disable face merging')
+    parser.add_argument('--direct', action='store_true', default=False,
+                        help='Use direct CAD construction (experimental, smaller files, proper cylindrical bends)')
 
     args = parser.parse_args()
 
@@ -160,41 +162,53 @@ Examples:
             opts.append(f"stiffeners({len(stiffeners)})")
         if args.merge_faces:
             opts.append("merge-faces")
+        if args.direct:
+            opts.append("direct")
         print(f"Options: {', '.join(opts)}")
-
-        # Generate mesh
-        print("Generating mesh...")
-        mesh = create_board_geometry_mesh(
-            geom,
-            markers=markers,
-            include_traces=args.traces,
-            include_pads=args.pads,
-            include_components=args.components and not args.models_3d,
-            include_3d_models=args.models_3d,
-            pcb_dir=pcb_dir,
-            pcb=pcb,
-            subdivide_length=1.0,
-            num_bend_subdivisions=subdivisions,
-            stiffeners=stiffeners,
-            apply_bend=not args.flat
-        )
-
-        print(f"Mesh: {len(mesh.vertices)} vertices, {len(mesh.faces)} faces")
 
         # Export to STEP
         print(f"Exporting to STEP: {args.output}")
 
-        if args.merge_faces:
-            if len(mesh.faces) > 2000:
-                print(f"Note: Face merging requires sewing which is slow for large meshes.")
-                print(f"      Consider using --subdivisions 1-2 for faster merge.")
-            success = mesh_to_step_unified(
-                mesh, args.output,
-                max_faces=args.max_faces,
-                merge_faces=True
+        if args.direct and markers and not args.flat:
+            # Use direct CAD construction (no mesh intermediate)
+            print("Using direct CAD construction...")
+            success = board_to_step_direct(
+                geom,
+                markers=markers,
+                filename=args.output,
+                num_bend_subdivisions=subdivisions
             )
         else:
-            success = mesh_to_step(mesh, args.output, max_faces=args.max_faces)
+            # Generate mesh
+            print("Generating mesh...")
+            mesh = create_board_geometry_mesh(
+                geom,
+                markers=markers,
+                include_traces=args.traces,
+                include_pads=args.pads,
+                include_components=args.components and not args.models_3d,
+                include_3d_models=args.models_3d,
+                pcb_dir=pcb_dir,
+                pcb=pcb,
+                subdivide_length=1.0,
+                num_bend_subdivisions=subdivisions,
+                stiffeners=stiffeners,
+                apply_bend=not args.flat
+            )
+
+            print(f"Mesh: {len(mesh.vertices)} vertices, {len(mesh.faces)} faces")
+
+            if args.merge_faces:
+                if len(mesh.faces) > 2000:
+                    print(f"Note: Face merging requires sewing which is slow for large meshes.")
+                    print(f"      Consider using --subdivisions 1-2 for faster merge.")
+                success = mesh_to_step_unified(
+                    mesh, args.output,
+                    max_faces=args.max_faces,
+                    merge_faces=True
+                )
+            else:
+                success = mesh_to_step(mesh, args.output, max_faces=args.max_faces)
 
         if success:
             file_size = os.path.getsize(args.output)
