@@ -277,7 +277,8 @@ def board_to_step_direct(
     board_geometry,
     markers: list = None,
     filename: str = "output.step",
-    num_bend_subdivisions: int = 1
+    num_bend_subdivisions: int = 1,
+    stiffeners: list = None
 ) -> bool:
     """
     Export board geometry to STEP using direct CAD construction.
@@ -285,6 +286,7 @@ def board_to_step_direct(
     Instead of triangulating and converting, this creates native CAD geometry:
     - Flat regions: extruded 2D profiles (planar faces)
     - Bend zones: swept profiles along circular arcs (cylindrical faces)
+    - Stiffeners: extruded profiles offset from PCB surface
 
     This produces much smaller STEP files with proper parametric surfaces.
 
@@ -293,6 +295,7 @@ def board_to_step_direct(
         markers: List of FoldMarker objects
         filename: Output STEP file path
         num_bend_subdivisions: Subdivisions in bend zones (1 = single arc)
+        stiffeners: List of StiffenerRegion objects
 
     Returns:
         True if export successful, False otherwise
@@ -373,6 +376,42 @@ def board_to_step_direct(
             else:
                 # Create flat region geometry using extrusion
                 part = _create_flat_region_solid(region, recipe, thickness)
+                if part:
+                    all_parts.append(part)
+
+        # Process stiffeners
+        if stiffeners:
+            print(f"Processing {len(stiffeners)} stiffeners...")
+
+            # Import region finder
+            try:
+                from .planar_subdivision import find_containing_region
+            except ImportError:
+                from planar_subdivision import find_containing_region
+
+            for stiffener in stiffeners:
+                # Find which region the stiffener is in (for fold transformation)
+                stiff_centroid = stiffener.centroid
+                containing_region = find_containing_region(stiff_centroid, regions)
+
+                # Build recipe for this stiffener
+                stiff_recipe = []
+                if containing_region and hasattr(containing_region, 'fold_recipe') and containing_region.fold_recipe:
+                    for entry in containing_region.fold_recipe:
+                        fm = entry[0]
+                        classification = entry[1]
+                        entered_from_back = entry[2] if len(entry) > 2 else False
+                        stiff_recipe.append((FoldDefinition.from_marker(fm), classification, entered_from_back))
+
+                # Create stiffener solid
+                part = _create_stiffener_solid(
+                    stiffener.outline,
+                    stiffener.cutouts,
+                    stiffener.thickness,
+                    thickness,  # PCB thickness
+                    stiffener.side,
+                    stiff_recipe
+                )
                 if part:
                     all_parts.append(part)
 
@@ -549,6 +588,157 @@ def _make_polygon_face(vertices_3d: list, holes_3d: list = None) -> TopoDS_Face:
         return face
 
     except Exception:
+        return None
+
+
+def _create_stiffener_solid(
+    outline: list,
+    cutouts: list,
+    stiffener_thickness: float,
+    pcb_thickness: float,
+    side: str,
+    recipe: list
+):
+    """
+    Create a solid for a stiffener region.
+
+    Stiffeners are flat extruded profiles that sit on top or bottom of the PCB.
+
+    Args:
+        outline: Stiffener outline vertices [(x,y), ...]
+        cutouts: List of hole polygons
+        stiffener_thickness: Thickness of the stiffener
+        pcb_thickness: PCB thickness (for bottom offset)
+        side: "top" or "bottom"
+        recipe: Fold recipe for 3D transformation
+
+    Returns:
+        OCC shell representing the stiffener
+    """
+    try:
+        # Import transform functions
+        try:
+            from .bend_transform import transform_point, compute_normal
+        except ImportError:
+            from bend_transform import transform_point, compute_normal
+
+        outline_2d = [(v[0], v[1]) for v in outline]
+        holes_2d = [[(v[0], v[1]) for v in h] for h in cutouts] if cutouts else []
+
+        if len(outline_2d) < 3:
+            return None
+
+        # Transform all vertices to 3D
+        # For stiffeners, we need to offset from the PCB surface
+        top_3d = []
+        bottom_3d = []
+
+        for v in outline_2d:
+            p3d = transform_point(v, recipe)
+            normal = compute_normal(v, recipe)
+
+            if side == "top":
+                # Stiffener on top: from PCB top surface upward
+                stiff_bottom = p3d
+                stiff_top = (
+                    p3d[0] + normal[0] * stiffener_thickness,
+                    p3d[1] + normal[1] * stiffener_thickness,
+                    p3d[2] + normal[2] * stiffener_thickness
+                )
+            else:  # bottom
+                # Stiffener on bottom: from PCB bottom surface downward
+                pcb_bottom = (
+                    p3d[0] - normal[0] * pcb_thickness,
+                    p3d[1] - normal[1] * pcb_thickness,
+                    p3d[2] - normal[2] * pcb_thickness
+                )
+                stiff_top = pcb_bottom
+                stiff_bottom = (
+                    pcb_bottom[0] - normal[0] * stiffener_thickness,
+                    pcb_bottom[1] - normal[1] * stiffener_thickness,
+                    pcb_bottom[2] - normal[2] * stiffener_thickness
+                )
+
+            top_3d.append(stiff_top)
+            bottom_3d.append(stiff_bottom)
+
+        # Transform holes
+        holes_top_3d = []
+        holes_bottom_3d = []
+        for hole in holes_2d:
+            hole_top = []
+            hole_bottom = []
+            for v in hole:
+                p3d = transform_point(v, recipe)
+                normal = compute_normal(v, recipe)
+
+                if side == "top":
+                    ht = (
+                        p3d[0] + normal[0] * stiffener_thickness,
+                        p3d[1] + normal[1] * stiffener_thickness,
+                        p3d[2] + normal[2] * stiffener_thickness
+                    )
+                    hb = p3d
+                else:
+                    pcb_bottom = (
+                        p3d[0] - normal[0] * pcb_thickness,
+                        p3d[1] - normal[1] * pcb_thickness,
+                        p3d[2] - normal[2] * pcb_thickness
+                    )
+                    ht = pcb_bottom
+                    hb = (
+                        pcb_bottom[0] - normal[0] * stiffener_thickness,
+                        pcb_bottom[1] - normal[1] * stiffener_thickness,
+                        pcb_bottom[2] - normal[2] * stiffener_thickness
+                    )
+
+                hole_top.append(ht)
+                hole_bottom.append(hb)
+            holes_top_3d.append(hole_top)
+            holes_bottom_3d.append(hole_bottom)
+
+        # Create faces using OCC directly
+        builder = BRep_Builder()
+        shell = TopoDS_Shell()
+        builder.MakeShell(shell)
+
+        # Top face
+        top_face = _make_polygon_face(top_3d, holes_top_3d)
+        if top_face:
+            builder.Add(shell, top_face)
+
+        # Bottom face (reversed winding)
+        bottom_face = _make_polygon_face(list(reversed(bottom_3d)),
+                                         [list(reversed(h)) for h in holes_bottom_3d])
+        if bottom_face:
+            builder.Add(shell, bottom_face)
+
+        # Side faces (outer boundary)
+        n = len(top_3d)
+        for i in range(n):
+            j = (i + 1) % n
+            side_pts = [top_3d[i], top_3d[j], bottom_3d[j], bottom_3d[i]]
+            side_face = _make_polygon_face(side_pts)
+            if side_face:
+                builder.Add(shell, side_face)
+
+        # Side faces for holes (inner walls)
+        for hole_top, hole_bottom in zip(holes_top_3d, holes_bottom_3d):
+            nh = len(hole_top)
+            for i in range(nh):
+                j = (i + 1) % nh
+                # Reversed winding for inner walls
+                side_pts = [hole_top[j], hole_top[i], hole_bottom[i], hole_bottom[j]]
+                side_face = _make_polygon_face(side_pts)
+                if side_face:
+                    builder.Add(shell, side_face)
+
+        return shell
+
+    except Exception as e:
+        print(f"Stiffener creation failed: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 

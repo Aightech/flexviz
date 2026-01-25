@@ -176,7 +176,8 @@ Examples:
                 geom,
                 markers=markers,
                 filename=args.output,
-                num_bend_subdivisions=subdivisions
+                num_bend_subdivisions=subdivisions,
+                stiffeners=stiffeners if args.stiffeners else None
             )
         else:
             # Generate mesh
