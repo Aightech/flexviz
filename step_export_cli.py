@@ -16,11 +16,15 @@ Options:
     --no-stiffeners     Disable stiffeners
     --stiffener-thickness  Stiffener thickness in mm (default: from config or 0.2)
     --marker-layer      Layer containing fold markers (default: from config or User.1)
+    --cylindrical       Use true cylindrical surfaces for bend zones (experimental)
+    --merge-faces       Merge adjacent coplanar faces to reduce file size
+    --max-faces N       Maximum faces to export (default: 5000)
 
 Example:
     source venv/bin/activate
     python step_export_cli.py my_board.kicad_pcb my_board.step
     python step_export_cli.py my_board.kicad_pcb my_board.step --3d-models --pads
+    python step_export_cli.py my_board.kicad_pcb my_board.step --merge-faces
 """
 
 import sys
@@ -30,7 +34,10 @@ import argparse
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from step_export import is_step_export_available, mesh_to_step
+from step_export import (
+    is_step_export_available, mesh_to_step, mesh_to_step_unified,
+    board_geometry_to_step_cylindrical
+)
 from mesh import create_board_geometry_mesh
 from geometry import extract_geometry
 from markers import detect_fold_markers
@@ -76,6 +83,12 @@ Examples:
                         help='Layer containing fold markers (default: from config or User.1)')
     parser.add_argument('--max-faces', type=int, default=5000,
                         help='Maximum faces to export (default: 5000)')
+    parser.add_argument('--cylindrical', action='store_true',
+                        help='Use true cylindrical surfaces for bend zones (experimental)')
+    parser.add_argument('--merge-faces', action='store_true', default=False,
+                        help='Merge adjacent coplanar faces to reduce file size')
+    parser.add_argument('--no-merge-faces', dest='merge_faces', action='store_false',
+                        help='Disable face merging')
 
     args = parser.parse_args()
 
@@ -148,30 +161,56 @@ Examples:
             opts.append("3d-models")
         if stiffeners:
             opts.append(f"stiffeners({len(stiffeners)})")
+        if args.cylindrical:
+            opts.append("cylindrical")
+        if args.merge_faces:
+            opts.append("merge-faces")
         print(f"Options: {', '.join(opts)}")
-
-        # Generate mesh
-        print("Generating mesh...")
-        mesh = create_board_geometry_mesh(
-            geom,
-            markers=markers,
-            include_traces=args.traces,
-            include_pads=args.pads,
-            include_components=args.components and not args.models_3d,
-            include_3d_models=args.models_3d,
-            pcb_dir=pcb_dir,
-            pcb=pcb,
-            subdivide_length=1.0,
-            num_bend_subdivisions=subdivisions,
-            stiffeners=stiffeners,
-            apply_bend=not args.flat
-        )
-
-        print(f"Mesh: {len(mesh.vertices)} vertices, {len(mesh.faces)} faces")
 
         # Export to STEP
         print(f"Exporting to STEP: {args.output}")
-        success = mesh_to_step(mesh, args.output, max_faces=args.max_faces)
+
+        if args.cylindrical and markers and not args.flat:
+            # Use cylindrical export for bend zones
+            print("Using cylindrical surfaces for bend zones...")
+            success = board_geometry_to_step_cylindrical(
+                geom,
+                markers=markers,
+                filename=args.output,
+                include_traces=args.traces,
+                include_pads=args.pads,
+                merge_faces=args.merge_faces,
+                num_bend_subdivisions=subdivisions
+            )
+        else:
+            # Generate mesh
+            print("Generating mesh...")
+            mesh = create_board_geometry_mesh(
+                geom,
+                markers=markers,
+                include_traces=args.traces,
+                include_pads=args.pads,
+                include_components=args.components and not args.models_3d,
+                include_3d_models=args.models_3d,
+                pcb_dir=pcb_dir,
+                pcb=pcb,
+                subdivide_length=1.0,
+                num_bend_subdivisions=subdivisions,
+                stiffeners=stiffeners,
+                apply_bend=not args.flat
+            )
+
+            print(f"Mesh: {len(mesh.vertices)} vertices, {len(mesh.faces)} faces")
+
+            # Export using appropriate function
+            if args.merge_faces:
+                success = mesh_to_step_unified(
+                    mesh, args.output,
+                    max_faces=args.max_faces,
+                    merge_faces=True
+                )
+            else:
+                success = mesh_to_step(mesh, args.output, max_faces=args.max_faces)
 
         if success:
             file_size = os.path.getsize(args.output)
