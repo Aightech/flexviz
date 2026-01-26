@@ -17,14 +17,14 @@
     },
     "versions": [
         {
-            "version": "1.0.0",
+            "version": "{{VERSION}}",
             "status": "stable",
             "kicad_version": "7.0",
             "kicad_version_max": "9.99",
-            "download_url": "https://github.com/Aightech/flexviz/releases/download/v1.0.0/flexviz-1.0.0.zip",
-            "download_sha256": "714fd450aab9b1de710889ad037f10e3c35cc9879f0fb84a8dac7f4b97cbe319",
-            "download_size": 157461,
-            "install_size": 488016
+            "download_url": "https://github.com/Aightech/flexviz/releases/download/v{{VERSION}}/flexviz-{{VERSION}}.zip",
+            "download_sha256": "{{SHA256}}",
+            "download_size": {{DOWNLOAD_SIZE}},
+            "install_size": {{INSTALL_SIZE}}
         }
     ]
 }
