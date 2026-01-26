@@ -142,8 +142,13 @@ def segment_line_intersection(
     if abs(d2) < 1e-10:
         return (1.0, seg_end)
 
+    # Check for parallel/near-parallel segment (d1 ≈ d2)
+    denom = d1 - d2
+    if abs(denom) < 1e-10:
+        return None
+
     # Proper intersection
-    t = d1 / (d1 - d2)
+    t = d1 / denom
     px = seg_start[0] + t * (seg_end[0] - seg_start[0])
     py = seg_start[1] + t * (seg_end[1] - seg_start[1])
     return (t, (px, py))
