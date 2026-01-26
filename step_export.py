@@ -389,10 +389,31 @@ def board_to_step_direct(
             except ImportError:
                 from planar_subdivision import find_containing_region
 
-            for stiffener in stiffeners:
+            for stiff_idx, stiffener in enumerate(stiffeners):
                 # Find which region the stiffener is in (for fold transformation)
+                # Try centroid first, then outline vertices as fallback
                 stiff_centroid = stiffener.centroid
                 containing_region = find_containing_region(stiff_centroid, regions)
+
+                # If centroid didn't match, try outline vertices
+                if containing_region is None and stiffener.outline:
+                    for v in stiffener.outline:
+                        containing_region = find_containing_region((v[0], v[1]), regions)
+                        if containing_region is not None:
+                            break
+
+                # If still no match, find nearest region by centroid distance
+                if containing_region is None and regions:
+                    min_dist = float('inf')
+                    for region in regions:
+                        # Compute region centroid
+                        rx = sum(v[0] for v in region.outline) / len(region.outline)
+                        ry = sum(v[1] for v in region.outline) / len(region.outline)
+                        dist = (stiff_centroid[0] - rx)**2 + (stiff_centroid[1] - ry)**2
+                        if dist < min_dist:
+                            min_dist = dist
+                            containing_region = region
+                    print(f"  Stiffener {stiff_idx}: using nearest region (centroid not in any region)")
 
                 # Build recipe for this stiffener
                 stiff_recipe = []
@@ -782,7 +803,7 @@ def _create_bend_zone_solid(region, recipe: list, thickness: float):
 
         # Compute bend parameters
         R = fold.radius  # Inner radius
-        angle = fold.angle  # Bend angle in radians
+        angle = fold.angle  # Bend angle in radians (NOT negated for back entry)
         hw = fold.zone_width / 2
 
         # Compute width of this region along the fold axis
@@ -803,6 +824,7 @@ def _create_bend_zone_solid(region, recipe: list, thickness: float):
         center_along = (min_along + max_along) / 2
 
         # Compute cumulative rotation matrix from previous folds
+        # Use same logic as bend_transform.py for AFTER entries
         rot = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
         for entry in recipe_before:
             prev_fold = entry[0]
@@ -810,7 +832,11 @@ def _create_bend_zone_solid(region, recipe: list, thickness: float):
             efb = entry[2] if len(entry) > 2 else False
             if classification == "AFTER":
                 fold_axis_3d = _apply_rotation(rot, (prev_fold.axis[0], prev_fold.axis[1], 0.0))
-                rotation_angle = -prev_fold.angle if efb else prev_fold.angle
+                # Match bend_transform.py: rotation_angle = -angle + pi for back entry
+                if efb:
+                    rotation_angle = -prev_fold.angle + math.pi
+                else:
+                    rotation_angle = prev_fold.angle
                 fold_rot = _rotation_matrix_around_axis(fold_axis_3d, rotation_angle)
                 rot = _multiply_matrices(fold_rot, rot)
 
@@ -819,65 +845,101 @@ def _create_bend_zone_solid(region, recipe: list, thickness: float):
         perp_3d = _apply_rotation(rot, (fold.perp[0], fold.perp[1], 0.0))
         up_3d = _apply_rotation(rot, (0.0, 0.0, 1.0))
 
-        # Get the 3D transformation at the start of the bend (centered)
-        # The bend starts at perp_dist = -hw from fold center
-        start_2d = (
-            fold.center[0] - hw * fold.perp[0] + center_along * fold.axis[0],
-            fold.center[1] - hw * fold.perp[1] + center_along * fold.axis[1]
-        )
+        # Find actual boundary vertices from the region outline to ensure continuity
+        # with adjacent flat regions. The boundary is at perp_dist = ±hw.
+        boundary_perp = hw if entered_from_back else -hw
+        tolerance = 0.01  # tolerance for matching boundary vertices
+
+        # Find vertices on the boundary line
+        boundary_verts_2d = []
+        for v in region.outline:
+            dx = v[0] - fold.center[0]
+            dy = v[1] - fold.center[1]
+            perp_dist = dx * fold.perp[0] + dy * fold.perp[1]
+            if abs(perp_dist - boundary_perp) < tolerance:
+                along = dx * fold.axis[0] + dy * fold.axis[1]
+                boundary_verts_2d.append((v, along))
+
+        # Sort by position along fold axis and get the midpoint
+        if boundary_verts_2d:
+            boundary_verts_2d.sort(key=lambda x: x[1])
+            # Use the midpoint along the boundary edge
+            if len(boundary_verts_2d) >= 2:
+                v1, along1 = boundary_verts_2d[0]
+                v2, along2 = boundary_verts_2d[-1]
+                mid_along = (along1 + along2) / 2
+                start_2d = (
+                    fold.center[0] + boundary_perp * fold.perp[0] + mid_along * fold.axis[0],
+                    fold.center[1] + boundary_perp * fold.perp[1] + mid_along * fold.axis[1]
+                )
+            else:
+                start_2d = boundary_verts_2d[0][0]
+        else:
+            # Fallback to computed position if no boundary vertices found
+            start_2d = (
+                fold.center[0] + boundary_perp * fold.perp[0] + center_along * fold.axis[0],
+                fold.center[1] + boundary_perp * fold.perp[1] + center_along * fold.axis[1]
+            )
+
+        # For back entry, mirror perpendicular direction for arc computation
+        if entered_from_back:
+            perp_3d = (-perp_3d[0], -perp_3d[1], -perp_3d[2])
+
         start_3d = transform_point(start_2d, recipe_before)
 
         # Arc path points (on the centerline of the board)
-        cyl_center = Vector(start_3d[0], start_3d[1], start_3d[2])
+        arc_start = Vector(start_3d[0], start_3d[1], start_3d[2])
 
-        # Handle back entry
-        effective_angle = angle
-        if entered_from_back:
-            effective_angle = -angle
-
+        # Arc geometry - angle is NOT negated, bend direction stays consistent
         # Middle point of arc (at half angle)
-        mid_angle = effective_angle / 2
+        mid_angle = angle / 2
         mid_offset_perp = R * math.sin(abs(mid_angle))
         mid_offset_up = R * (1 - math.cos(abs(mid_angle)))
-        if effective_angle < 0:
+        if angle < 0:
             mid_offset_up = -mid_offset_up
 
         arc_mid = Vector(
-            cyl_center.X + mid_offset_perp * perp_3d[0] + mid_offset_up * up_3d[0],
-            cyl_center.Y + mid_offset_perp * perp_3d[1] + mid_offset_up * up_3d[1],
-            cyl_center.Z + mid_offset_perp * perp_3d[2] + mid_offset_up * up_3d[2]
+            arc_start.X + mid_offset_perp * perp_3d[0] + mid_offset_up * up_3d[0],
+            arc_start.Y + mid_offset_perp * perp_3d[1] + mid_offset_up * up_3d[1],
+            arc_start.Z + mid_offset_perp * perp_3d[2] + mid_offset_up * up_3d[2]
         )
 
         # End point of arc (at full angle)
-        end_offset_perp = R * math.sin(abs(effective_angle))
-        end_offset_up = R * (1 - math.cos(abs(effective_angle)))
-        if effective_angle < 0:
+        end_offset_perp = R * math.sin(abs(angle))
+        end_offset_up = R * (1 - math.cos(abs(angle)))
+        if angle < 0:
             end_offset_up = -end_offset_up
 
         arc_end = Vector(
-            cyl_center.X + end_offset_perp * perp_3d[0] + end_offset_up * up_3d[0],
-            cyl_center.Y + end_offset_perp * perp_3d[1] + end_offset_up * up_3d[1],
-            cyl_center.Z + end_offset_perp * perp_3d[2] + end_offset_up * up_3d[2]
+            arc_start.X + end_offset_perp * perp_3d[0] + end_offset_up * up_3d[0],
+            arc_start.Y + end_offset_perp * perp_3d[1] + end_offset_up * up_3d[1],
+            arc_start.Z + end_offset_perp * perp_3d[2] + end_offset_up * up_3d[2]
         )
 
         # Create the sweep path (three-point arc)
         with BuildLine() as path:
-            ThreePointArc(cyl_center, arc_mid, arc_end)
+            ThreePointArc(arc_start, arc_mid, arc_end)
 
         # Create the profile (rectangle in the plane perpendicular to path start)
         # Profile plane: normal is perp_3d (sweep direction at start)
         # X direction: axis_3d (along fold)
-        # Y direction: up_3d (board thickness direction)
+        # Y direction: z_dir × x_dir = perp_3d × axis_3d
+        #   - Normal entry: Y = -up_3d (points DOWN)
+        #   - Back entry: perp_3d is negated, so Y = up_3d (points UP)
         profile_plane = Plane(
-            origin=cyl_center,
+            origin=arc_start,
             x_dir=Vector(axis_3d[0], axis_3d[1], axis_3d[2]),
             z_dir=Vector(perp_3d[0], perp_3d[1], perp_3d[2])
         )
 
         # Profile centered on the path, extending width/2 in each direction along axis
         # and thickness in the -up direction (board thickness)
+        # Alignment depends on Y direction:
+        #   - Normal entry: Y = -up_3d, use Align.MIN so +Y = DOWN
+        #   - Back entry: Y = up_3d, use Align.MAX so -Y = DOWN
+        y_align = Align.MAX if entered_from_back else Align.MIN
         with BuildSketch(profile_plane) as profile:
-            Rectangle(width, thickness, align=(Align.CENTER, Align.MAX))
+            Rectangle(width, thickness, align=(Align.CENTER, y_align))
 
         # Sweep the profile along the arc
         with BuildPart() as part:

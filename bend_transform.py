@@ -342,9 +342,13 @@ def compute_normal(
         fold_axis_3d = _apply_rotation(rot, (fold.axis[0], fold.axis[1], 0.0))
 
         if classification == "AFTER":
-            if not entered_from_back:  
+            if not entered_from_back:
+                # Normal entry: surface is rotated by the fold angle
                 fold_rot = _rotation_matrix_around_axis(fold_axis_3d, fold.angle)
             else:
+                # Back entry: surface is tilted by mirrored geometry
+                # The tangent uses cos(-angle+π), sin(-angle+π) = (-cos, sin)
+                # Normal perpendicular to this requires -angle rotation
                 fold_rot = _rotation_matrix_around_axis(fold_axis_3d, -fold.angle)
             rot = _multiply_matrices(fold_rot, rot)
 
