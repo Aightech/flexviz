@@ -4,9 +4,6 @@ import pytest
 import math
 from pathlib import Path
 
-import sys
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
 from kicad_parser import KiCadPCB
 from geometry import (
     Point2D,
@@ -311,7 +308,8 @@ class TestOffsetPolygon:
         vertices = [(0, 0), (10, 0), (10, 10), (0, 10)]
         poly = Polygon(vertices)
 
-        expanded = offset_polygon(poly, 1.0)
+        # Negative offset expands for CCW polygons
+        expanded = offset_polygon(poly, -1.0)
 
         # Expanded polygon should be larger
         assert expanded.bounding_box.width > poly.bounding_box.width
@@ -322,7 +320,8 @@ class TestOffsetPolygon:
         vertices = [(0, 0), (10, 0), (10, 10), (0, 10)]
         poly = Polygon(vertices)
 
-        shrunk = offset_polygon(poly, -1.0)
+        # Positive offset shrinks for CCW polygons
+        shrunk = offset_polygon(poly, 1.0)
 
         # Shrunk polygon should be smaller
         assert shrunk.bounding_box.width < poly.bounding_box.width

@@ -1,7 +1,12 @@
 """Pytest fixtures for kicad_flex_viewer tests."""
 
 import pytest
+import sys
 from pathlib import Path
+
+# Add plugin directory to path for imports
+PLUGIN_DIR = Path(__file__).parent.parent / "plugins" / "com_github_aightech_flexviz"
+sys.path.insert(0, str(PLUGIN_DIR))
 
 
 @pytest.fixture

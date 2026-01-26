@@ -4,9 +4,6 @@ import pytest
 import math
 from pathlib import Path
 
-import sys
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
 from kicad_parser import KiCadPCB, GraphicLine, Dimension
 from markers import (
     FoldMarker,

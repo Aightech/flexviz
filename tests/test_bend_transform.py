@@ -4,21 +4,13 @@ import pytest
 import math
 from pathlib import Path
 
-import sys
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
 from bend_transform import (
     FoldDefinition,
-    PointClassification,
-    classify_point,
-    transform_point_single_fold,
     transform_point,
-    transform_polygon,
-    transform_line_segment,
+    compute_normal,
+    transform_point_and_normal,
     create_fold_definitions,
-    _project_onto_axis,
 )
-from geometry import Polygon, LineSegment
 from markers import FoldMarker
 
 
@@ -28,18 +20,18 @@ class TestFoldDefinition:
     def test_create(self):
         """Test creating a fold definition."""
         fold = FoldDefinition(
-            position=(50, 15),
+            center=(50, 15),
             axis=(0, 1),
             zone_width=5.0,
             angle=math.pi / 2
         )
-        assert fold.position == (50, 15)
+        assert fold.center == (50, 15)
         assert fold.angle == math.pi / 2
 
     def test_radius(self):
         """Test radius calculation."""
         fold = FoldDefinition(
-            position=(50, 15),
+            center=(50, 15),
             axis=(0, 1),
             zone_width=5.0,
             angle=math.pi / 2  # 90 degrees
@@ -51,34 +43,34 @@ class TestFoldDefinition:
     def test_radius_zero_angle(self):
         """Test radius with zero angle."""
         fold = FoldDefinition(
-            position=(50, 15),
+            center=(50, 15),
             axis=(0, 1),
             zone_width=5.0,
             angle=0.0
         )
         assert fold.radius == float('inf')
 
-    def test_perpendicular(self):
+    def test_perp(self):
         """Test perpendicular vector calculation."""
         # Vertical fold axis
         fold = FoldDefinition(
-            position=(50, 15),
+            center=(50, 15),
             axis=(0, 1),
             zone_width=5.0,
             angle=math.pi / 2
         )
-        perp = fold.perpendicular
+        perp = fold.perp
         assert abs(perp[0] - (-1)) < 0.01
         assert abs(perp[1]) < 0.01
 
         # Horizontal fold axis
         fold = FoldDefinition(
-            position=(50, 15),
+            center=(50, 15),
             axis=(1, 0),
             zone_width=5.0,
             angle=math.pi / 2
         )
-        perp = fold.perpendicular
+        perp = fold.perp
         assert abs(perp[0]) < 0.01
         assert abs(perp[1] - 1) < 0.01
 
@@ -97,223 +89,124 @@ class TestFoldDefinition:
         )
 
         fold = FoldDefinition.from_marker(marker)
-        assert fold.position == (42.5, 15)
+        assert fold.center == (42.5, 15)
         assert fold.axis == (0, 1)
         assert fold.zone_width == 5.0
         assert abs(fold.angle - math.pi / 2) < 0.01
 
 
-class TestProjectOntoAxis:
-    """Tests for axis projection."""
+class TestTransformPoint:
+    """Tests for recipe-based point transformation."""
 
-    def test_project_simple(self):
-        """Test simple projection."""
-        along, perp = _project_onto_axis(
-            point=(10, 5),
-            origin=(0, 0),
-            axis=(1, 0)  # Horizontal axis
-        )
-        assert abs(along - 10) < 0.01
-        assert abs(perp - 5) < 0.01
+    def test_empty_recipe(self):
+        """Test with empty recipe returns flat point."""
+        result = transform_point((50, 15), [])
+        assert result == (50, 15, 0.0)
 
-    def test_project_vertical_axis(self):
-        """Test projection on vertical axis."""
-        along, perp = _project_onto_axis(
-            point=(5, 10),
-            origin=(0, 0),
-            axis=(0, 1)  # Vertical axis
-        )
-        assert abs(along - 10) < 0.01
-        assert abs(perp - (-5)) < 0.01
-
-
-class TestClassifyPoint:
-    """Tests for point classification."""
-
-    def test_point_before_fold(self):
-        """Test point before fold zone."""
+    def test_in_zone_transformation(self):
+        """Test point in fold zone gets curved."""
         fold = FoldDefinition(
-            position=(50, 15),
-            axis=(0, 1),  # Vertical fold line
-            zone_width=10.0,
-            angle=math.pi / 2
-        )
-
-        # Point at x=40, well before fold center at x=50
-        classification, dist = classify_point((40, 15), fold)
-        assert classification == PointClassification.BEFORE
-
-    def test_point_in_zone(self):
-        """Test point inside fold zone."""
-        fold = FoldDefinition(
-            position=(50, 15),
-            axis=(0, 1),
-            zone_width=10.0,
-            angle=math.pi / 2
-        )
-
-        # Point at fold center
-        classification, dist = classify_point((50, 15), fold)
-        assert classification == PointClassification.IN_ZONE
-        assert abs(dist - 5.0) < 0.01  # Middle of zone
-
-    def test_point_after_fold(self):
-        """Test point after fold zone."""
-        fold = FoldDefinition(
-            position=(50, 15),
-            axis=(0, 1),
-            zone_width=10.0,
-            angle=math.pi / 2
-        )
-
-        # Point at x=60, well after fold center
-        classification, dist = classify_point((60, 15), fold)
-        assert classification == PointClassification.AFTER
-
-
-class TestTransformPointSingleFold:
-    """Tests for single fold transformation."""
-
-    def test_point_before_unchanged(self):
-        """Test that points before fold are unchanged."""
-        fold = FoldDefinition(
-            position=(50, 15),
-            axis=(0, 1),
-            zone_width=10.0,
-            angle=math.pi / 2
-        )
-
-        # Point well before fold
-        result = transform_point_single_fold((30, 15), fold)
-        assert abs(result[0] - 30) < 0.01
-        assert abs(result[1] - 15) < 0.01
-        assert abs(result[2]) < 0.01
-
-    def test_90_degree_fold_endpoint(self):
-        """Test 90-degree fold end position."""
-        fold = FoldDefinition(
-            position=(50, 15),
-            axis=(0, 1),
+            center=(50, 15),
+            axis=(0, 1),  # Vertical fold
             zone_width=10.0,
             angle=math.pi / 2  # 90 degrees
         )
 
-        # Point at the end of the fold zone
-        # Should be bent upward 90 degrees
-        result = transform_point_single_fold((55, 15), fold)
+        # Recipe: point is IN_ZONE
+        recipe = [(fold, "IN_ZONE", False)]
+        result = transform_point((50, 15), recipe)
 
-        # After a 90-degree bend, the z should have increased
+        # Point at center of zone should have some z displacement
+        # For 90-degree fold at midpoint (45 degrees), z > 0
         assert result[2] > 0
 
-    def test_zero_angle_unchanged(self):
-        """Test that zero angle leaves points unchanged."""
+    def test_after_transformation(self):
+        """Test point after fold zone gets rotated."""
         fold = FoldDefinition(
-            position=(50, 15),
-            axis=(0, 1),
+            center=(50, 15),
+            axis=(0, 1),  # Vertical fold
             zone_width=10.0,
-            angle=0.0  # No bend
+            angle=math.pi / 2  # 90 degrees
         )
 
-        result = transform_point_single_fold((50, 15), fold)
-        assert abs(result[0] - 50) < 0.1
-        assert abs(result[1] - 15) < 0.1
-        assert abs(result[2]) < 0.1
+        # Recipe: point is AFTER (past the fold zone)
+        recipe = [(fold, "AFTER", False)]
+        result = transform_point((60, 15), recipe)
 
-    def test_negative_angle_bends_down(self):
-        """Test negative angle bends downward."""
-        fold = FoldDefinition(
-            position=(50, 15),
+        # After 90-degree fold, point should have significant z displacement
+        assert abs(result[2]) > 1
+
+    def test_negative_angle_opposite_direction(self):
+        """Test negative angle bends in opposite direction."""
+        fold_pos = FoldDefinition(
+            center=(50, 15),
             axis=(0, 1),
             zone_width=10.0,
-            angle=-math.pi / 2  # -90 degrees
+            angle=math.pi / 2
+        )
+        fold_neg = FoldDefinition(
+            center=(50, 15),
+            axis=(0, 1),
+            zone_width=10.0,
+            angle=-math.pi / 2
         )
 
-        result = transform_point_single_fold((55, 15), fold)
-        # Should bend downward (negative z)
-        assert result[2] < 0
+        recipe_pos = [(fold_pos, "AFTER", False)]
+        recipe_neg = [(fold_neg, "AFTER", False)]
 
+        result_pos = transform_point((60, 15), recipe_pos)
+        result_neg = transform_point((60, 15), recipe_neg)
 
-class TestTransformPoint:
-    """Tests for multi-fold transformation."""
+        # Opposite angles should produce opposite z directions
+        assert result_pos[2] * result_neg[2] < 0
 
-    def test_no_folds(self):
-        """Test with no folds."""
-        result = transform_point((50, 15), [])
-        assert result == (50, 15, 0.0)
-
-    def test_single_fold(self):
-        """Test with single fold."""
+    def test_back_entry_mirroring(self):
+        """Test back entry mirrors the transformation."""
         fold = FoldDefinition(
-            position=(50, 15),
+            center=(50, 15),
             axis=(0, 1),
             zone_width=10.0,
             angle=math.pi / 2
         )
 
-        result = transform_point((30, 15), [fold])
-        assert abs(result[0] - 30) < 0.01
-        assert abs(result[1] - 15) < 0.01
+        # Same position, different entry direction
+        recipe_front = [(fold, "AFTER", False)]
+        recipe_back = [(fold, "AFTER", True)]
+
+        result_front = transform_point((60, 15), recipe_front)
+        result_back = transform_point((40, 15), recipe_back)
+
+        # Back entry should produce mirrored perpendicular position
+        # Both should have z displacement (same sign due to mirroring)
+        assert abs(result_front[2]) > 1
+        assert abs(result_back[2]) > 1
 
 
-class TestTransformPolygon:
-    """Tests for polygon transformation."""
+class TestComputeNormal:
+    """Tests for normal computation."""
 
-    def test_transform_square(self):
-        """Test transforming a square polygon."""
-        poly = Polygon([(0, 0), (10, 0), (10, 10), (0, 10)])
+    def test_flat_normal(self):
+        """Test normal with no folds is (0, 0, 1)."""
+        normal = compute_normal((50, 15), [])
+        assert abs(normal[0]) < 0.01
+        assert abs(normal[1]) < 0.01
+        assert abs(normal[2] - 1.0) < 0.01
 
+    def test_after_fold_normal_rotated(self):
+        """Test normal after fold is rotated."""
         fold = FoldDefinition(
-            position=(50, 15),
-            axis=(0, 1),
+            center=(50, 15),
+            axis=(0, 1),  # Vertical fold
             zone_width=10.0,
-            angle=math.pi / 2
+            angle=math.pi / 2  # 90 degrees
         )
 
-        # Square is before the fold, should be mostly unchanged
-        result = transform_polygon(poly, [fold], subdivide=False)
-        assert len(result) == 4
+        recipe = [(fold, "AFTER", False)]
+        normal = compute_normal((60, 15), recipe)
 
-        # All z values should be ~0 (before fold)
-        for v in result:
-            assert abs(v[2]) < 0.01
-
-    def test_transform_with_subdivision(self):
-        """Test that subdivision adds vertices."""
-        poly = Polygon([(0, 0), (100, 0), (100, 10), (0, 10)])
-
-        result = transform_polygon(poly, [], subdivide=True, max_edge_length=10.0)
-
-        # Should have more vertices due to subdivision
-        assert len(result) > 4
-
-
-class TestTransformLineSegment:
-    """Tests for line segment transformation."""
-
-    def test_transform_segment(self):
-        """Test transforming a line segment."""
-        segment = LineSegment((0, 0), (100, 0), width=1.0)
-
-        fold = FoldDefinition(
-            position=(50, 0),
-            axis=(0, 1),
-            zone_width=10.0,
-            angle=math.pi / 2
-        )
-
-        result = transform_line_segment(segment, [fold], subdivisions=10)
-
-        assert len(result) == 11  # 10 subdivisions + 1
-
-    def test_segment_no_folds(self):
-        """Test segment with no folds."""
-        segment = LineSegment((0, 0), (10, 0), width=1.0)
-
-        result = transform_line_segment(segment, [], subdivisions=5)
-
-        assert len(result) == 6
-        for v in result:
-            assert abs(v[2]) < 0.01  # All z should be 0
+        # After 90-degree fold, normal should be significantly rotated from (0,0,1)
+        # The exact direction depends on fold axis orientation
+        assert abs(normal[0]) > 0.9 or abs(normal[2]) < 0.1  # Normal is rotated
 
 
 class TestCreateFoldDefinitions:

@@ -4,7 +4,8 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PLUGIN_NAME="kicad_flex_viewer"
+PLUGIN_NAME="com_github_aightech_flexviz"
+PLUGIN_SRC="$SCRIPT_DIR/plugins/$PLUGIN_NAME"
 
 # Detect KiCad version and plugin directory
 detect_kicad_plugin_dir() {
@@ -31,19 +32,20 @@ detect_kicad_plugin_dir() {
 }
 
 PLUGIN_DIR=$(detect_kicad_plugin_dir)
-# Use com_github style naming for 3rdparty plugins
-if [[ "$PLUGIN_DIR" == *"3rdparty"* ]]; then
-    TARGET_DIR="$PLUGIN_DIR/com_github_flex_viewer"
-else
-    TARGET_DIR="$PLUGIN_DIR/$PLUGIN_NAME"
-fi
+TARGET_DIR="$PLUGIN_DIR/$PLUGIN_NAME"
 
 echo "KiCad Flex Viewer - Installation"
 echo "================================"
 echo ""
-echo "Source directory: $SCRIPT_DIR"
+echo "Source directory: $PLUGIN_SRC"
 echo "Target directory: $TARGET_DIR"
 echo ""
+
+# Check source exists
+if [[ ! -d "$PLUGIN_SRC" ]]; then
+    echo "Error: Plugin source not found at $PLUGIN_SRC"
+    exit 1
+fi
 
 # Check if already installed
 if [[ -e "$TARGET_DIR" ]]; then
@@ -71,15 +73,13 @@ echo ""
 if [[ $REPLY =~ ^[Cc]$ ]]; then
     # Copy files
     echo "Copying files..."
-    mkdir -p "$TARGET_DIR"
-    cp -r "$SCRIPT_DIR"/*.py "$TARGET_DIR/"
-    cp -r "$SCRIPT_DIR"/resources "$TARGET_DIR/"
+    cp -r "$PLUGIN_SRC" "$TARGET_DIR"
     echo "Files copied to: $TARGET_DIR"
 else
     # Create symlink
     echo "Creating symlink..."
-    ln -s "$SCRIPT_DIR" "$TARGET_DIR"
-    echo "Symlink created: $TARGET_DIR -> $SCRIPT_DIR"
+    ln -s "$PLUGIN_SRC" "$TARGET_DIR"
+    echo "Symlink created: $TARGET_DIR -> $PLUGIN_SRC"
 fi
 
 echo ""

@@ -18,12 +18,8 @@ Folds (10 wide each):
 """
 
 import math
-import sys
-import os
 from pathlib import Path
 from dataclasses import dataclass
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import matplotlib
 matplotlib.use('Agg')
