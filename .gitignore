@@ -41,3 +41,6 @@ test_*.py
 # Backup files
 *.bkp
 *~
+
+# Release packages
+*.zip
