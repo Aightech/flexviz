@@ -36,6 +36,26 @@ pytest tests/ --cov=. --cov-report=html
 pip install pytest pytest-cov numpy pyvista
 ```
 
+## Repository Structure
+
+```
+flexviz/
+├── plugins/com_github_aightech_flexviz/  # KiCad plugin (installed to KiCad)
+│   ├── __init__.py          # Plugin registration
+│   ├── plugin.py            # ActionPlugin classes
+│   ├── kicad_parser.py      # .kicad_pcb file parser
+│   ├── geometry.py          # Board geometry extraction
+│   ├── markers.py           # Fold marker detection
+│   ├── bend_transform.py    # 3D transformation
+│   ├── mesh.py              # Triangle mesh generation
+│   ├── viewer.py            # wxPython + OpenGL viewer
+│   ├── step_export.py       # STEP CAD export
+│   └── resources/           # Icons
+├── tests/                   # Unit tests
+├── docs/                    # Documentation
+└── install.sh               # Installation script
+```
+
 ## Architecture
 
 ### Data Flow Pipeline
@@ -50,7 +70,7 @@ pip install pytest pytest-cov numpy pyvista
 
 3. **markers.py**: Detects fold markers from a configurable User layer (default: User.1). Uses dimension-first detection: starts from each dimension's start point and finds the containing parallel line pair. This avoids mismatch when markers are close together. Fold axis direction is normalized for consistency (horizontal folds: +X, vertical folds: +Y) to ensure parallel folds have consistent perpendicular directions.
 
-4. **bend_transform.py**: Transforms 2D flat geometry into 3D bent geometry. `FoldDefinition` encapsulates fold parameters. Points are classified as before/in/after the bend zone and transformed accordingly (cylindrical mapping in bend zone, rotation+translation after).
+4. **bend_transform.py**: Transforms 2D flat geometry into 3D bent geometry using recipe-based fold application. Each region has a fold_recipe specifying which folds affect it and how (IN_ZONE or AFTER).
 
 5. **mesh.py**: Generates triangle meshes for board outline, traces, and pads. Handles subdivision of geometry crossing bend zones for smooth curves.
 
@@ -58,9 +78,11 @@ pip install pytest pytest-cov numpy pyvista
 
 7. **plugin.py**: KiCad `ActionPlugin` registration. Three actions: Test, Create Fold, Open Viewer.
 
+8. **step_export.py**: Exports bent geometry to STEP format using build123d/OpenCASCADE. Creates true CAD solids with named bodies (FLEX_PCB, STIFFENER_N).
+
 ### KiCad Plugin Entry Point
 
-`__init__.py` registers the action plugins. If imports fail, it logs errors to `flex_viewer_error.log` and registers a dummy error-reporting plugin instead.
+`plugins/com_github_aightech_flexviz/__init__.py` registers the action plugins. If imports fail, it logs errors to `flex_viewer_error.log` and registers a dummy error-reporting plugin instead.
 
 ### Fold Marker Convention
 

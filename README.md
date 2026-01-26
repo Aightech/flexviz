@@ -184,26 +184,26 @@ pip install vispy numpy
 ## File Structure
 
 ```
-kicad_flex_viewer/
-├── __init__.py                # Package init
-├── plugin.py                  # KiCad action plugin registration
-├── kicad_parser.py            # .kicad_pcb file parser (S-expression)
-├── geometry.py                # Geometry extraction (outline, traces, pads)
-├── markers.py                 # Fold marker detection and parsing
-├── bend_transform.py          # Bend transformation mathematics (Phase 2)
-├── fold_placer.py             # Interactive placement logic (Phase 4)
-├── viewer.py                  # 3D visualization window (Phase 3)
-├── ui_controls.py             # Sidebar controls (Phase 3)
-├── install.sh                 # Installation script
-├── tests/                     # Unit tests
+flexviz/
+├── plugins/
+│   └── com_github_aightech_flexviz/   # KiCad plugin package
+│       ├── __init__.py                # Plugin registration
+│       ├── plugin.py                  # KiCad ActionPlugin classes
+│       ├── kicad_parser.py            # .kicad_pcb file parser
+│       ├── geometry.py                # Board geometry extraction
+│       ├── markers.py                 # Fold marker detection
+│       ├── bend_transform.py          # 3D bend transformation
+│       ├── mesh.py                    # Triangle mesh generation
+│       ├── viewer.py                  # wxPython + OpenGL viewer
+│       ├── step_export.py             # STEP CAD export
+│       └── resources/                 # Button icons
+├── tests/                             # Unit tests
 │   ├── test_kicad_parser.py
 │   ├── test_markers.py
-│   ├── test_geometry.py
-│   └── test_data/             # Test PCB files
-└── resources/
-    ├── icon_test.png          # Test button icon
-    ├── icon_create_fold.png   # Create Fold button icon
-    └── icon_open_viewer.png   # Open Viewer button icon
+│   └── test_data/                     # Test PCB files
+├── docs/                              # Documentation
+├── install.sh                         # Installation script
+└── README.md
 ```
 
 ## Bend Transformation
