@@ -4,6 +4,8 @@
 
 A KiCad Python extension for visualizing folded/bent flex PCBs in an interactive 3D window.
 
+Demo: [youtube](https://youtu.be/HmH2Al12qMI)
+
 ## Overview
 
 KiCad does not natively support flex PCB bend visualization in its 3D viewer. This plugin fills that gap by:
