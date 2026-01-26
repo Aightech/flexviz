@@ -81,6 +81,18 @@ class BoundingBox:
 
 
 @dataclass
+class OutlineSegment:
+    """A segment of an outline that can be either a line or an arc."""
+    type: str  # "line" or "arc"
+    start: tuple[float, float]
+    end: tuple[float, float]
+    # For arcs only:
+    center: tuple[float, float] = None
+    radius: float = 0.0
+    mid: tuple[float, float] = None  # Mid point on arc (for 3-point arc definition)
+
+
+@dataclass
 class Polygon:
     """A 2D polygon defined by vertices, optionally with arc segment info."""
     vertices: list[tuple[float, float]]
@@ -120,18 +132,6 @@ class Polygon:
             j = (i + 1) % len(self.vertices)
             edges.append((self.vertices[i], self.vertices[j]))
         return edges
-
-
-@dataclass
-class OutlineSegment:
-    """A segment of an outline that can be either a line or an arc."""
-    type: str  # "line" or "arc"
-    start: tuple[float, float]
-    end: tuple[float, float]
-    # For arcs only:
-    center: tuple[float, float] = None
-    radius: float = 0.0
-    mid: tuple[float, float] = None  # Mid point on arc (for 3-point arc definition)
 
 
 @dataclass
