@@ -336,10 +336,12 @@ def board_to_step_direct(
         cutout_verts = [[(v[0], v[1]) for v in c.vertices] for c in cutouts]
 
         # Split board into regions
+        # For direct CAD construction, we don't need subdivisions - each bend zone
+        # is a single swept solid along the arc (true parametric geometry)
         if markers:
             regions = split_board_into_regions(
                 outline_verts, cutout_verts, markers,
-                num_bend_subdivisions=num_bend_subdivisions
+                num_bend_subdivisions=1  # No subdivisions needed for direct CAD
             )
         else:
             # No bends - single flat region
@@ -353,7 +355,8 @@ def board_to_step_direct(
 
         print(f"Processing {len(regions)} regions...")
 
-        all_parts = []
+        pcb_parts = []  # PCB regions (will be fused into one body)
+        stiffener_parts = []  # Stiffeners (remain separate)
 
         for region in regions:
             # Build fold recipe with FoldDefinitions
@@ -372,12 +375,12 @@ def board_to_step_direct(
                 # Create bend zone geometry using sweep
                 part = _create_bend_zone_solid(region, recipe, thickness)
                 if part:
-                    all_parts.append(part)
+                    pcb_parts.append(part)
             else:
                 # Create flat region geometry using extrusion
                 part = _create_flat_region_solid(region, recipe, thickness)
                 if part:
-                    all_parts.append(part)
+                    pcb_parts.append(part)
 
         # Process stiffeners
         if stiffeners:
@@ -434,28 +437,64 @@ def board_to_step_direct(
                     stiff_recipe
                 )
                 if part:
-                    all_parts.append(part)
+                    stiffener_parts.append(part)
 
-        if not all_parts:
+        if not pcb_parts and not stiffener_parts:
             print("No geometry created")
             return False
 
-        # Combine all parts
-        print(f"Combining {len(all_parts)} parts...")
+        # Fuse all PCB parts into a single solid body
+        print(f"Fusing {len(pcb_parts)} PCB regions into single body...")
+        pcb_body = None
+        if pcb_parts:
+            # Get first part as starting shape
+            first_part = pcb_parts[0]
+            pcb_body = first_part.wrapped if hasattr(first_part, 'wrapped') else first_part
 
-        if len(all_parts) == 1:
-            result = all_parts[0]
-        else:
-            # Create compound of all parts
-            builder = BRep_Builder()
-            compound = TopoDS_Compound()
-            builder.MakeCompound(compound)
-            for part in all_parts:
-                if hasattr(part, 'wrapped'):
-                    builder.Add(compound, part.wrapped)
-                else:
-                    builder.Add(compound, part)
-            result = Compound(compound)
+            # Fuse remaining parts using boolean union
+            for i, part in enumerate(pcb_parts[1:], 1):
+                part_shape = part.wrapped if hasattr(part, 'wrapped') else part
+                try:
+                    fuse_op = BRepAlgoAPI_Fuse(pcb_body, part_shape)
+                    fuse_op.Build()
+                    if fuse_op.IsDone():
+                        pcb_body = fuse_op.Shape()
+                    else:
+                        print(f"  Warning: Fuse failed for part {i}, trying sewing fallback")
+                        # Try sewing as fallback
+                        sewing = BRepBuilderAPI_Sewing(0.1)
+                        sewing.Add(pcb_body)
+                        sewing.Add(part_shape)
+                        sewing.Perform()
+                        pcb_body = sewing.SewedShape()
+                except Exception as e:
+                    print(f"  Warning: Fuse error for part {i}: {e}, adding to compound")
+                    # Last resort: just add to compound
+                    builder = BRep_Builder()
+                    compound = TopoDS_Compound()
+                    builder.MakeCompound(compound)
+                    builder.Add(compound, pcb_body)
+                    builder.Add(compound, part_shape)
+                    pcb_body = compound
+
+            print(f"  Fuse complete")
+
+        # Combine PCB body with stiffeners (stiffeners remain separate)
+        print(f"Adding {len(stiffener_parts)} stiffeners as separate bodies...")
+        builder = BRep_Builder()
+        compound = TopoDS_Compound()
+        builder.MakeCompound(compound)
+
+        if pcb_body is not None:
+            builder.Add(compound, pcb_body)
+
+        for part in stiffener_parts:
+            if hasattr(part, 'wrapped'):
+                builder.Add(compound, part.wrapped)
+            else:
+                builder.Add(compound, part)
+
+        result = Compound(compound)
 
         # Export
         export_step(result, filename)
@@ -475,8 +514,8 @@ def _create_flat_region_solid(region, recipe: list, thickness: float):
     """
     Create a solid for a flat region by extruding its 2D outline.
 
-    For flat regions (no bend or after a bend), we create the geometry
-    directly in 3D space using the transformed vertices.
+    Uses BRepPrimAPI_MakePrism to create a true solid body by extruding
+    the transformed face in the normal direction.
     """
     try:
         # Import transform functions
@@ -492,79 +531,201 @@ def _create_flat_region_solid(region, recipe: list, thickness: float):
         if len(outline_2d) < 3:
             return None
 
-        # Transform all vertices to 3D
+        # Transform all vertices to 3D (top surface)
         top_3d = []
-        bottom_3d = []
         for v in outline_2d:
             p3d = transform_point(v, recipe)
-            normal = compute_normal(v, recipe)
             top_3d.append(p3d)
-            bottom_3d.append((
-                p3d[0] - normal[0] * thickness,
-                p3d[1] - normal[1] * thickness,
-                p3d[2] - normal[2] * thickness
-            ))
 
-        # Transform holes
+        # Get the normal direction (use first vertex, all should be same for flat region)
+        normal = compute_normal(outline_2d[0], recipe)
+        extrude_vec = gp_Vec(
+            -normal[0] * thickness,
+            -normal[1] * thickness,
+            -normal[2] * thickness
+        )
+
+        # Transform holes to 3D
         holes_top_3d = []
-        holes_bottom_3d = []
         for hole in holes_2d:
-            hole_top = []
-            hole_bottom = []
-            for v in hole:
-                p3d = transform_point(v, recipe)
-                normal = compute_normal(v, recipe)
-                hole_top.append(p3d)
-                hole_bottom.append((
-                    p3d[0] - normal[0] * thickness,
-                    p3d[1] - normal[1] * thickness,
-                    p3d[2] - normal[2] * thickness
-                ))
+            hole_top = [transform_point(v, recipe) for v in hole]
             holes_top_3d.append(hole_top)
-            holes_bottom_3d.append(hole_bottom)
 
-        # Create faces using OCC directly
-        builder = BRep_Builder()
-        shell = TopoDS_Shell()
-        builder.MakeShell(shell)
-
-        # Top face
+        # Create the top face with holes
         top_face = _make_polygon_face(top_3d, holes_top_3d)
-        if top_face:
-            builder.Add(shell, top_face)
+        if top_face is None:
+            return None
 
-        # Bottom face (reversed winding)
-        bottom_face = _make_polygon_face(list(reversed(bottom_3d)),
-                                         [list(reversed(h)) for h in holes_bottom_3d])
-        if bottom_face:
-            builder.Add(shell, bottom_face)
+        # Extrude the face to create a solid
+        prism = BRepPrimAPI_MakePrism(top_face, extrude_vec)
+        if not prism.IsDone():
+            print("  Warning: Prism extrusion failed, falling back to shell")
+            return _create_flat_region_shell_fallback(top_3d, holes_top_3d, normal, thickness)
 
-        # Side faces (outer boundary)
-        n = len(top_3d)
-        for i in range(n):
-            j = (i + 1) % n
-            side_pts = [top_3d[i], top_3d[j], bottom_3d[j], bottom_3d[i]]
-            side_face = _make_polygon_face(side_pts)
-            if side_face:
-                builder.Add(shell, side_face)
-
-        # Side faces for holes (inner walls)
-        for hole_top, hole_bottom in zip(holes_top_3d, holes_bottom_3d):
-            nh = len(hole_top)
-            for i in range(nh):
-                j = (i + 1) % nh
-                # Reversed winding for inner walls
-                side_pts = [hole_top[j], hole_top[i], hole_bottom[i], hole_bottom[j]]
-                side_face = _make_polygon_face(side_pts)
-                if side_face:
-                    builder.Add(shell, side_face)
-
-        return shell
+        return prism.Shape()
 
     except Exception as e:
         print(f"Flat region creation failed: {e}")
         import traceback
         traceback.print_exc()
+        return None
+
+
+def _create_flat_region_shell_fallback(top_3d, holes_top_3d, normal, thickness):
+    """Fallback to shell creation if extrusion fails."""
+    # Compute bottom vertices
+    bottom_3d = [
+        (p[0] - normal[0] * thickness,
+         p[1] - normal[1] * thickness,
+         p[2] - normal[2] * thickness)
+        for p in top_3d
+    ]
+    holes_bottom_3d = [
+        [(p[0] - normal[0] * thickness,
+          p[1] - normal[1] * thickness,
+          p[2] - normal[2] * thickness) for p in hole]
+        for hole in holes_top_3d
+    ]
+
+    builder = BRep_Builder()
+    shell = TopoDS_Shell()
+    builder.MakeShell(shell)
+
+    # Top face
+    top_face = _make_polygon_face(top_3d, holes_top_3d)
+    if top_face:
+        builder.Add(shell, top_face)
+
+    # Bottom face (reversed winding)
+    bottom_face = _make_polygon_face(list(reversed(bottom_3d)),
+                                     [list(reversed(h)) for h in holes_bottom_3d])
+    if bottom_face:
+        builder.Add(shell, bottom_face)
+
+    # Side faces (outer boundary)
+    n = len(top_3d)
+    for i in range(n):
+        j = (i + 1) % n
+        side_pts = [top_3d[i], top_3d[j], bottom_3d[j], bottom_3d[i]]
+        side_face = _make_polygon_face(side_pts)
+        if side_face:
+            builder.Add(shell, side_face)
+
+    # Side faces for holes
+    for hole_top, hole_bottom in zip(holes_top_3d, holes_bottom_3d):
+        nh = len(hole_top)
+        for i in range(nh):
+            j = (i + 1) % nh
+            side_pts = [hole_top[j], hole_top[i], hole_bottom[i], hole_bottom[j]]
+            side_face = _make_polygon_face(side_pts)
+            if side_face:
+                builder.Add(shell, side_face)
+
+    return shell
+
+
+def _make_wire_with_arcs(segments_3d: list) -> 'TopoDS_Wire':
+    """
+    Create a wire from a list of 3D segments (lines and arcs).
+
+    Args:
+        segments_3d: List of segment dicts with keys:
+            - type: "line" or "arc"
+            - start: (x, y, z)
+            - end: (x, y, z)
+            - mid: (x, y, z) for arcs
+
+    Returns:
+        TopoDS_Wire or None if failed
+    """
+    if not segments_3d:
+        return None
+
+    try:
+        wire_maker = BRepBuilderAPI_MakeWire()
+
+        for seg in segments_3d:
+            start_pt = gp_Pnt(float(seg['start'][0]), float(seg['start'][1]), float(seg['start'][2]))
+            end_pt = gp_Pnt(float(seg['end'][0]), float(seg['end'][1]), float(seg['end'][2]))
+
+            if seg['type'] == 'arc' and seg.get('mid'):
+                mid_pt = gp_Pnt(float(seg['mid'][0]), float(seg['mid'][1]), float(seg['mid'][2]))
+                # Create arc edge from 3 points
+                arc_maker = GC_MakeArcOfCircle(start_pt, mid_pt, end_pt)
+                if arc_maker.IsDone():
+                    arc_curve = arc_maker.Value()
+                    edge_maker = BRepBuilderAPI_MakeEdge(arc_curve)
+                    if edge_maker.IsDone():
+                        wire_maker.Add(edge_maker.Edge())
+                    else:
+                        # Fall back to line if arc edge fails
+                        seg_maker = GC_MakeSegment(start_pt, end_pt)
+                        if seg_maker.IsDone():
+                            edge_maker = BRepBuilderAPI_MakeEdge(seg_maker.Value())
+                            if edge_maker.IsDone():
+                                wire_maker.Add(edge_maker.Edge())
+                else:
+                    # Fall back to line if arc creation fails
+                    seg_maker = GC_MakeSegment(start_pt, end_pt)
+                    if seg_maker.IsDone():
+                        edge_maker = BRepBuilderAPI_MakeEdge(seg_maker.Value())
+                        if edge_maker.IsDone():
+                            wire_maker.Add(edge_maker.Edge())
+            else:
+                # Line segment
+                seg_maker = GC_MakeSegment(start_pt, end_pt)
+                if seg_maker.IsDone():
+                    edge_maker = BRepBuilderAPI_MakeEdge(seg_maker.Value())
+                    if edge_maker.IsDone():
+                        wire_maker.Add(edge_maker.Edge())
+
+        if wire_maker.IsDone():
+            return wire_maker.Wire()
+        return None
+
+    except Exception:
+        return None
+
+
+def _make_face_with_arcs(segments_3d: list, holes_segments_3d: list = None) -> TopoDS_Face:
+    """
+    Create a planar face from segments that may include arcs.
+
+    Args:
+        segments_3d: List of segment dicts for outer boundary
+        holes_segments_3d: List of segment lists for holes
+
+    Returns:
+        TopoDS_Face or None
+    """
+    if not segments_3d:
+        return None
+
+    try:
+        # Create outer wire with arcs
+        outer_wire = _make_wire_with_arcs(segments_3d)
+        if outer_wire is None:
+            return None
+
+        # Create face from wire
+        face_maker = BRepBuilderAPI_MakeFace(outer_wire, True)
+        if not face_maker.IsDone():
+            return None
+
+        face = face_maker.Face()
+
+        # Add holes if any
+        if holes_segments_3d:
+            for hole_segs in holes_segments_3d:
+                hole_wire = _make_wire_with_arcs(hole_segs)
+                if hole_wire:
+                    face_maker = BRepBuilderAPI_MakeFace(face, hole_wire)
+                    if face_maker.IsDone():
+                        face = face_maker.Face()
+
+        return face
+
+    except Exception:
         return None
 
 

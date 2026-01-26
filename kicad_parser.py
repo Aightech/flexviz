@@ -379,6 +379,214 @@ class KiCadPCB:
         self._parse_edge_cuts_polygons()
         return self._polygon_cutouts
 
+    def get_board_outline_with_arcs(self) -> tuple[list[tuple[float, float]], list[dict]]:
+        """
+        Extract board outline with arc information preserved.
+
+        Returns:
+            Tuple of (vertices, segments) where:
+            - vertices: list of (x, y) points (for compatibility, arcs linearized)
+            - segments: list of segment dicts with keys:
+                - type: "line" or "arc"
+                - start: (x, y)
+                - end: (x, y)
+                - mid: (x, y) for arcs (point on arc)
+                - center: (x, y) for arcs
+                - radius: float for arcs
+        """
+        import math
+
+        # Collect raw segments with type info
+        raw_segments = []  # [(start, end, type, arc_info), ...]
+
+        for line in self.root.find_all('gr_line'):
+            layer = line['layer']
+            if layer and layer.get_string(0) == 'Edge.Cuts':
+                start = line['start']
+                end = line['end']
+                if start and end:
+                    raw_segments.append({
+                        'type': 'line',
+                        'start': (start.get_float(0), start.get_float(1)),
+                        'end': (end.get_float(0), end.get_float(1)),
+                    })
+
+        for arc in self.root.find_all('gr_arc'):
+            layer = arc['layer']
+            if layer and layer.get_string(0) == 'Edge.Cuts':
+                start = arc['start']
+                mid = arc['mid']
+                end = arc['end']
+                if start and end:
+                    start_pt = (start.get_float(0), start.get_float(1))
+                    end_pt = (end.get_float(0), end.get_float(1))
+                    mid_pt = (mid.get_float(0), mid.get_float(1)) if mid else None
+
+                    # Calculate arc center and radius from 3 points
+                    center = None
+                    radius = 0.0
+                    if mid_pt:
+                        ax, ay = start_pt
+                        bx, by = mid_pt
+                        cx, cy = end_pt
+
+                        d = 2 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by))
+                        if abs(d) > 1e-10:
+                            ux = ((ax*ax + ay*ay) * (by - cy) + (bx*bx + by*by) * (cy - ay) + (cx*cx + cy*cy) * (ay - by)) / d
+                            uy = ((ax*ax + ay*ay) * (cx - bx) + (bx*bx + by*by) * (ax - cx) + (cx*cx + cy*cy) * (bx - ax)) / d
+                            center = (ux, uy)
+                            radius = math.sqrt((ax - ux)**2 + (ay - uy)**2)
+
+                    raw_segments.append({
+                        'type': 'arc',
+                        'start': start_pt,
+                        'end': end_pt,
+                        'mid': mid_pt,
+                        'center': center,
+                        'radius': radius,
+                    })
+
+        for rect in self.root.find_all('gr_rect'):
+            layer = rect['layer']
+            if layer and layer.get_string(0) == 'Edge.Cuts':
+                start = rect['start']
+                end = rect['end']
+                if start and end:
+                    x1, y1 = start.get_float(0), start.get_float(1)
+                    x2, y2 = end.get_float(0), end.get_float(1)
+                    raw_segments.append({'type': 'line', 'start': (x1, y1), 'end': (x2, y1)})
+                    raw_segments.append({'type': 'line', 'start': (x2, y1), 'end': (x2, y2)})
+                    raw_segments.append({'type': 'line', 'start': (x2, y2), 'end': (x1, y2)})
+                    raw_segments.append({'type': 'line', 'start': (x1, y2), 'end': (x1, y1)})
+
+        if not raw_segments:
+            return [], []
+
+        # Order segments into a closed polygon
+        ordered_segments = self._order_segments_with_arcs(raw_segments)
+
+        if not ordered_segments:
+            return [], []
+
+        # Find the largest polygon (outline) by computing approximate area
+        def polygon_area_from_segments(segs):
+            # Extract vertices for area calculation
+            verts = [s['start'] for s in segs]
+            n = len(verts)
+            if n < 3:
+                return 0
+            area = 0
+            for i in range(n):
+                j = (i + 1) % n
+                area += verts[i][0] * verts[j][1]
+                area -= verts[j][0] * verts[i][1]
+            return abs(area) / 2
+
+        # Sort by area, largest first
+        ordered_segments.sort(key=polygon_area_from_segments, reverse=True)
+
+        # Use the largest as outline
+        outline_segments = ordered_segments[0] if ordered_segments else []
+
+        # Generate vertices from segments (linearize arcs for compatibility)
+        vertices = []
+        for seg in outline_segments:
+            vertices.append(seg['start'])
+            if seg['type'] == 'arc' and seg.get('mid'):
+                # Add intermediate points for arcs (linearized)
+                arc_verts = self._arc_to_vertices(seg, segments_per_90deg=8)
+                vertices.extend(arc_verts[1:-1])  # Skip start (already added) and end (added by next segment)
+
+        return vertices, outline_segments
+
+    def _order_segments_with_arcs(self, segments: list, tolerance: float = 0.01) -> list[list[dict]]:
+        """
+        Order segments (including arcs) into continuous closed polygons.
+        Returns list of all closed polygons, each as a list of segment dicts.
+        """
+        if not segments:
+            return []
+
+        def point_eq(p1, p2):
+            return abs(p1[0] - p2[0]) < tolerance and abs(p1[1] - p2[1]) < tolerance
+
+        remaining = list(segments)
+        all_polygons = []
+
+        while remaining:
+            # Start a new polygon with the first remaining segment
+            current_seg = remaining.pop(0)
+            ordered = [current_seg]
+
+            max_iterations = len(segments) * 2
+            iterations = 0
+
+            while remaining and iterations < max_iterations:
+                iterations += 1
+                found = False
+                current_end = ordered[-1]['end']
+                current_start = ordered[0]['start']
+
+                for i, seg in enumerate(remaining):
+                    # Check if segment connects to end
+                    if point_eq(seg['start'], current_end):
+                        ordered.append(seg)
+                        remaining.pop(i)
+                        found = True
+                        break
+                    elif point_eq(seg['end'], current_end):
+                        # Reverse segment
+                        seg['start'], seg['end'] = seg['end'], seg['start']
+                        ordered.append(seg)
+                        remaining.pop(i)
+                        found = True
+                        break
+                    # Check if segment connects to start
+                    elif point_eq(seg['end'], current_start):
+                        ordered.insert(0, seg)
+                        remaining.pop(i)
+                        found = True
+                        break
+                    elif point_eq(seg['start'], current_start):
+                        # Reverse segment
+                        seg['start'], seg['end'] = seg['end'], seg['start']
+                        ordered.insert(0, seg)
+                        remaining.pop(i)
+                        found = True
+                        break
+
+                if not found:
+                    break
+
+            # Store this polygon if closed and has enough segments
+            if len(ordered) >= 3:
+                # Check if closed
+                if point_eq(ordered[0]['start'], ordered[-1]['end']):
+                    all_polygons.append(ordered)
+
+        return all_polygons
+
+    def _arc_to_vertices(self, arc_seg: dict, segments_per_90deg: int = 8) -> list[tuple[float, float]]:
+        """Convert an arc segment to linearized vertices."""
+        import math
+
+        start = arc_seg['start']
+        mid = arc_seg.get('mid')
+        end = arc_seg['end']
+
+        if not mid:
+            return [start, end]
+
+        # Use the existing linearize_arc logic
+        arc_segments = self._linearize_arc(start, mid, end, segments_per_90deg)
+
+        # Extract vertices from segments
+        vertices = [start]
+        for seg in arc_segments:
+            vertices.append(seg[1])
+
+        return vertices
+
     def _linearize_arc(
         self,
         start: tuple[float, float],

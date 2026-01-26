@@ -82,8 +82,9 @@ class BoundingBox:
 
 @dataclass
 class Polygon:
-    """A 2D polygon defined by vertices."""
+    """A 2D polygon defined by vertices, optionally with arc segment info."""
     vertices: list[tuple[float, float]]
+    segments: list[OutlineSegment] = field(default_factory=list)  # Optional segment info with arcs
 
     def __len__(self):
         return len(self.vertices)
@@ -119,6 +120,18 @@ class Polygon:
             j = (i + 1) % len(self.vertices)
             edges.append((self.vertices[i], self.vertices[j]))
         return edges
+
+
+@dataclass
+class OutlineSegment:
+    """A segment of an outline that can be either a line or an arc."""
+    type: str  # "line" or "arc"
+    start: tuple[float, float]
+    end: tuple[float, float]
+    # For arcs only:
+    center: tuple[float, float] = None
+    radius: float = 0.0
+    mid: tuple[float, float] = None  # Mid point on arc (for 3-point arc definition)
 
 
 @dataclass
@@ -241,9 +254,22 @@ def extract_geometry(pcb: KiCadPCB) -> BoardGeometry:
     # Get board info
     board_info = pcb.get_board_info()
 
-    # Get board outline
-    outline_points = pcb.get_board_outline()
-    outline = Polygon(outline_points) if outline_points else Polygon([])
+    # Get board outline with arc info
+    outline_points, outline_segs = pcb.get_board_outline_with_arcs()
+
+    # Convert segment dicts to OutlineSegment objects
+    segments = []
+    for seg in outline_segs:
+        segments.append(OutlineSegment(
+            type=seg['type'],
+            start=seg['start'],
+            end=seg['end'],
+            center=seg.get('center'),
+            radius=seg.get('radius', 0.0),
+            mid=seg.get('mid')
+        ))
+
+    outline = Polygon(outline_points, segments) if outline_points else Polygon([], [])
 
     # Get traces by layer
     traces = {}
