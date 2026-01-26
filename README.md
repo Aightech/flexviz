@@ -133,10 +133,19 @@ Fold markers are placed on a User layer (configurable, default: User.1) and cons
 
 ## Installation
 
-### Quick Install (Development)
+### Via Plugin and Content Manager (Recommended)
+
+1. Download the latest release: [flexviz-1.0.0.zip](https://github.com/Aightech/flexviz/releases/latest)
+2. Open KiCad and go to **Plugin and Content Manager** (PCM)
+3. Click **Install from File...** at the bottom
+4. Select the downloaded `flexviz-1.0.0.zip`
+5. Restart KiCad
+
+### Manual Install (Development)
 
 ```bash
-cd kicad_flex_viewer
+git clone https://github.com/Aightech/flexviz.git
+cd flexviz
 ./install.sh
 ```
 
@@ -145,17 +154,19 @@ The install script will:
 - Create a symlink for development (or copy for distribution)
 - Show you where the plugin was installed
 
-### Manual Install
+### Manual Install (Copy)
+
+Download the latest release ZIP and extract to your KiCad plugins directory:
 
 ```bash
 # For KiCad 9.x
-ln -s /path/to/kicad_flex_viewer ~/.local/share/kicad/9.0/scripting/plugins/kicad_flex_viewer
+unzip flexviz-*.zip -d ~/.local/share/kicad/9.0/3rdparty/plugins/
 
 # For KiCad 8.x
-ln -s /path/to/kicad_flex_viewer ~/.local/share/kicad/8.0/scripting/plugins/kicad_flex_viewer
+unzip flexviz-*.zip -d ~/.local/share/kicad/8.0/3rdparty/plugins/
 
 # For KiCad 7.x
-ln -s /path/to/kicad_flex_viewer ~/.local/share/kicad/7.0/scripting/plugins/kicad_flex_viewer
+unzip flexviz-*.zip -d ~/.local/share/kicad/7.0/scripting/plugins/
 ```
 
 ### Verify Installation
@@ -164,8 +175,8 @@ ln -s /path/to/kicad_flex_viewer ~/.local/share/kicad/7.0/scripting/plugins/kica
 2. Go to **Tools → External Plugins**
 3. You should see:
    - **Flex Viewer - Test** (verifies plugin works)
-   - **Create Fold** (placeholder)
-   - **Open Fold Viewer** (placeholder)
+   - **Create Fold**
+   - **Open Fold Viewer**
 
 ### Dependencies (for Phase 3+)
 
