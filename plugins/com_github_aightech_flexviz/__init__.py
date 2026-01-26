@@ -2,19 +2,17 @@
 KiCad Flex Viewer - Visualize folded flex PCBs in 3D
 
 This plugin provides action buttons in KiCad PCB Editor:
-1. Flex Viewer - Test: Verify plugin is working
-2. Create Fold: Define fold lines using two-point placement
-3. Open Viewer: Launch 3D visualization of the folded PCB
+1. Create Fold: Define fold lines using two-point placement
+2. Open Viewer: Launch 3D visualization of the folded PCB
 """
 
 __version__ = "1.0.0"
-__author__ = "Flex Viewer Contributors"
+__author__ = "Aightech"
 
 try:
-    from .plugin import FlexViewerTestAction, CreateFoldAction, OpenViewerAction
+    from .plugin import CreateFoldAction, OpenViewerAction
 
     # Register all action plugins
-    FlexViewerTestAction().register()
     CreateFoldAction().register()
     OpenViewerAction().register()
 
