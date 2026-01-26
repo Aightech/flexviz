@@ -519,6 +519,7 @@ def _export_step_with_names(named_shapes: list, filename: str) -> bool:
     """
     try:
         from OCP.STEPCAFControl import STEPCAFControl_Writer
+        from OCP.STEPControl import STEPControl_AsIs
         from OCP.XCAFDoc import XCAFDoc_DocumentTool
         from OCP.TDocStd import TDocStd_Document
         from OCP.TCollection import TCollection_ExtendedString
@@ -540,7 +541,7 @@ def _export_step_with_names(named_shapes: list, filename: str) -> bool:
 
         # Write to STEP
         writer = STEPCAFControl_Writer()
-        writer.Transfer(doc, 0)  # 0 = write as assembly
+        writer.Transfer(doc, STEPControl_AsIs)
 
         status = writer.Write(filename)
         return status == IFSelect_RetDone
