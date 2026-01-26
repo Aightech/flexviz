@@ -3,17 +3,17 @@
     "name": "Flex Viewer",
     "description": "Visualize bent/folded flex PCBs in 3D. Create fold markers, adjust bend angles interactively, and export to OBJ/STL/STEP formats.",
     "description_full": "KiCad Flex Viewer is a plugin for visualizing folded/bent flex PCBs in an interactive 3D window.\n\nFeatures:\n- Visual fold markers using two-point placement\n- Real-time 3D preview with adjustable bend angles\n- Multiple display modes (outline, traces, pads, components, 3D models)\n- Stiffener region visualization\n- Design validation (bend radius, stiffener conflicts)\n- Export to OBJ, STL, and STEP formats\n\nUsage:\n1. Draw a line on User.1 layer where you want the fold\n2. Select the line and click 'Create Fold'\n3. Click 'Open Fold Viewer' to see the bent PCB in 3D\n4. Adjust angles, toggle display options, export as needed",
-    "identifier": "com.github.flexviz.kicad-flex-viewer",
+    "identifier": "com.github.aightech.flexviz",
     "type": "plugin",
     "author": {
-        "name": "Flex Viewer Contributors",
+        "name": "Aightech",
         "contact": {
-            "web": "https://github.com/flexviz/kicad-flex-viewer"
+            "web": "https://github.com/Aightech/flexviz"
         }
     },
     "license": "MIT",
     "resources": {
-        "homepage": "https://github.com/flexviz/kicad-flex-viewer"
+        "homepage": "https://github.com/Aightech/flexviz"
     },
     "versions": [
         {
@@ -21,8 +21,8 @@
             "status": "stable",
             "kicad_version": "7.0",
             "kicad_version_max": "9.99",
-            "download_url": "https://github.com/flexviz/kicad-flex-viewer/releases/download/v1.0.0/kicad-flex-viewer-1.0.0.zip",
-            "download_sha256": "",
+            "download_url": "https://github.com/Aightech/flexviz/releases/download/v1.0.0/flexviz-1.0.0.zip",
+            "download_sha256": "PLACEHOLDER_SHA256",
             "download_size": 0,
             "install_size": 0
         }

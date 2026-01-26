@@ -1,5 +1,7 @@
 # KiCad Flex Viewer
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 A KiCad Python extension for visualizing folded/bent flex PCBs in an interactive 3D window.
 
 ## Overview
@@ -248,4 +250,4 @@ MIT License
 
 ## Contributing
 
-Contributions welcome! Please open an issue to discuss proposed changes.
+Contributions welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.

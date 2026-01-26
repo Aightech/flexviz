@@ -1,0 +1,8 @@
+# Optional dependencies for enhanced features
+
+# STEP export with true CAD construction
+# Requires build123d which depends on OCP (OpenCASCADE)
+build123d>=0.5.0
+
+# Alternative: cadquery also works for STEP export
+# cadquery>=2.4.0
