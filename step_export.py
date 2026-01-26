@@ -479,25 +479,21 @@ def board_to_step_direct(
 
             print(f"  Fuse complete")
 
-        # Combine PCB body with stiffeners (stiffeners remain separate)
+        # Export with named shapes using XCAF
         print(f"Adding {len(stiffener_parts)} stiffeners as separate bodies...")
-        builder = BRep_Builder()
-        compound = TopoDS_Compound()
-        builder.MakeCompound(compound)
+
+        # Collect named shapes: (shape, name)
+        named_shapes = []
 
         if pcb_body is not None:
-            builder.Add(compound, pcb_body)
+            named_shapes.append((pcb_body, "FLEX_PCB"))
 
-        for part in stiffener_parts:
-            if hasattr(part, 'wrapped'):
-                builder.Add(compound, part.wrapped)
-            else:
-                builder.Add(compound, part)
+        for i, part in enumerate(stiffener_parts):
+            part_shape = part.wrapped if hasattr(part, 'wrapped') else part
+            named_shapes.append((part_shape, f"STIFFENER_{i}"))
 
-        result = Compound(compound)
-
-        # Export
-        export_step(result, filename)
+        # Export using XCAF for named shapes
+        _export_step_with_names(named_shapes, filename)
         file_size = os.path.getsize(filename)
         print(f"Exported to {filename} ({file_size:,} bytes)")
 
@@ -508,6 +504,68 @@ def board_to_step_direct(
         import traceback
         traceback.print_exc()
         return False
+
+
+def _export_step_with_names(named_shapes: list, filename: str) -> bool:
+    """
+    Export shapes to STEP with names using XCAF.
+
+    Args:
+        named_shapes: List of (shape, name) tuples
+        filename: Output STEP file path
+
+    Returns:
+        True if successful
+    """
+    try:
+        from OCP.STEPCAFControl import STEPCAFControl_Writer
+        from OCP.XCAFDoc import XCAFDoc_DocumentTool
+        from OCP.TDocStd import TDocStd_Document
+        from OCP.TCollection import TCollection_ExtendedString
+        from OCP.TDataStd import TDataStd_Name
+        from OCP.IFSelect import IFSelect_RetDone
+
+        # Create XCAF document
+        doc = TDocStd_Document(TCollection_ExtendedString("MDTV-XCAF"))
+
+        # Get the shape tool and add shapes with names
+        shape_tool = XCAFDoc_DocumentTool.ShapeTool_s(doc.Main())
+
+        for shape, name in named_shapes:
+            # Add shape to document
+            label = shape_tool.AddShape(shape, False)  # False = don't make assembly
+
+            # Set name on the label
+            TDataStd_Name.Set_s(label, TCollection_ExtendedString(name))
+
+        # Write to STEP
+        writer = STEPCAFControl_Writer()
+        writer.Transfer(doc, 0)  # 0 = write as assembly
+
+        status = writer.Write(filename)
+        return status == IFSelect_RetDone
+
+    except ImportError as e:
+        print(f"  Warning: XCAF not available ({e}), falling back to simple export")
+        # Fallback to simple compound export
+        builder = BRep_Builder()
+        compound = TopoDS_Compound()
+        builder.MakeCompound(compound)
+        for shape, _ in named_shapes:
+            builder.Add(compound, shape)
+        export_step(Compound(compound), filename)
+        return True
+
+    except Exception as e:
+        print(f"  Warning: Named export failed ({e}), falling back to simple export")
+        # Fallback to simple compound export
+        builder = BRep_Builder()
+        compound = TopoDS_Compound()
+        builder.MakeCompound(compound)
+        for shape, _ in named_shapes:
+            builder.Add(compound, shape)
+        export_step(Compound(compound), filename)
+        return True
 
 
 def _create_flat_region_solid(region, recipe: list, thickness: float):
