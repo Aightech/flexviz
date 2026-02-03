@@ -2,15 +2,70 @@
 3D Viewer for flex PCB visualization.
 
 Uses wxPython + OpenGL (wx.glcanvas) for rendering.
-No external dependencies required - uses packages bundled with KiCad.
+Requires PyOpenGL to be installed in KiCad's Python environment.
 """
 
 import os
+import sys
 import wx
 import wx.glcanvas as glcanvas
-from OpenGL.GL import *
-from OpenGL.GLU import *
+
+# Check for PyOpenGL and provide helpful error message if missing
+try:
+    from OpenGL.GL import *
+    from OpenGL.GLU import *
+    OPENGL_AVAILABLE = True
+except ImportError:
+    OPENGL_AVAILABLE = False
+
 import math
+
+
+def get_opengl_install_instructions():
+    """Get platform-specific instructions for installing PyOpenGL."""
+    if sys.platform == 'win32':
+        # Find KiCad's Python path
+        python_path = sys.executable
+        return f"""PyOpenGL is required but not installed in KiCad's Python environment.
+
+To fix this, open Command Prompt as Administrator and run:
+
+    "{python_path}" -m pip install PyOpenGL PyOpenGL_accelerate
+
+Or if KiCad is installed in the default location:
+
+    "C:\\Program Files\\KiCad\\9.0\\bin\\python.exe" -m pip install PyOpenGL PyOpenGL_accelerate
+
+Then restart KiCad."""
+    elif sys.platform == 'darwin':
+        return f"""PyOpenGL is required but not installed in KiCad's Python environment.
+
+To fix this, open Terminal and run:
+
+    "{sys.executable}" -m pip install PyOpenGL
+
+Then restart KiCad."""
+    else:  # Linux
+        return f"""PyOpenGL is required but not installed in KiCad's Python environment.
+
+To fix this, open a terminal and run:
+
+    "{sys.executable}" -m pip install PyOpenGL
+
+Or install system-wide:
+
+    pip install PyOpenGL
+
+Then restart KiCad."""
+
+
+def check_opengl_available():
+    """Check if OpenGL is available and show error dialog if not."""
+    if not OPENGL_AVAILABLE:
+        msg = get_opengl_install_instructions()
+        wx.MessageBox(msg, "Missing Dependency: PyOpenGL", wx.OK | wx.ICON_ERROR)
+        return False
+    return True
 
 try:
     from .mesh import Mesh, create_board_geometry_mesh

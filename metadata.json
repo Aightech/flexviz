@@ -13,8 +13,7 @@
     },
     "license": "MIT",
     "resources": {
-        "homepage": "https://github.com/Aightech/flexviz",
-        "icon": "plugins/resources/markericon.svg"
+        "homepage": "https://github.com/Aightech/flexviz"
     },
     "versions": [
         {
@@ -23,9 +22,9 @@
             "kicad_version": "7.0",
             "kicad_version_max": "9.99",
             "download_url": "https://github.com/Aightech/flexviz/releases/download/v1.0.0/flexviz-1.0.0.zip",
-            "download_sha256": "2978ba8544f4425bb2525376f865a81e7a39a34dbda92d8d583f0c1d4dd3334c",
-            "download_size": 156989,
-            "install_size": 485170
+            "download_sha256": "bae4d6d5f49ee1cc97b76927a7a590fa49662d6f43aa569b37f44823ca058f4b",
+            "download_size": 110247,
+            "install_size": 430897
         }
     ]
 }

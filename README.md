@@ -174,15 +174,33 @@ unzip flexviz-*.zip -d ~/.local/share/kicad/7.0/scripting/plugins/
 1. Restart KiCad PCB Editor
 2. Go to **Tools → External Plugins**
 3. You should see:
-   - **Flex Viewer - Test** (verifies plugin works)
    - **Create Fold**
    - **Open Fold Viewer**
 
-### Dependencies (for Phase 3+)
+### PyOpenGL Dependency
 
-```bash
-pip install vispy numpy
+The 3D viewer requires PyOpenGL. If you get a "No module named 'OpenGL'" error, install it into KiCad's Python:
+
+**Windows** (run Command Prompt as Administrator):
+```cmd
+"C:\Program Files\KiCad\9.0\bin\python.exe" -m pip install PyOpenGL PyOpenGL_accelerate
 ```
+
+**Linux**:
+```bash
+# Find KiCad's Python path (shown in error message), then:
+/path/to/kicad/python -m pip install PyOpenGL
+
+# Or install system-wide:
+pip install PyOpenGL
+```
+
+**macOS**:
+```bash
+/Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework/Versions/Current/bin/python3 -m pip install PyOpenGL
+```
+
+Then restart KiCad.
 
 ## Usage
 
