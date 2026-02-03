@@ -6,7 +6,7 @@ This plugin provides action buttons in KiCad PCB Editor:
 2. Open Viewer: Launch 3D visualization of the folded PCB
 """
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 __author__ = "Aightech"
 
 try:
