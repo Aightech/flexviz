@@ -13,8 +13,7 @@
     },
     "license": "MIT",
     "resources": {
-        "homepage": "https://github.com/Aightech/flexviz",
-        "icon": "plugins/resources/markericon.svg"
+        "homepage": "https://github.com/Aightech/flexviz"
     },
     "versions": [
         {

@@ -98,6 +98,12 @@ class OpenViewerAction(pcbnew.ActionPlugin):
             # Hot-reload modules for development
             reload_plugin_modules()
 
+            # Check for OpenGL before importing viewer
+            from .viewer import OPENGL_AVAILABLE, check_opengl_available
+            if not OPENGL_AVAILABLE:
+                check_opengl_available()
+                return
+
             from .kicad_parser import KiCadPCB
             from .markers import detect_fold_markers
             from .geometry import extract_geometry
