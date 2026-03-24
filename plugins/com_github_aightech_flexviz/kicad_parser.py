@@ -7,7 +7,7 @@ that can be queried for board data.
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Union, Iterator
+from typing import Union, Iterator, Optional
 import re
 
 
@@ -106,13 +106,13 @@ class SExprTokenizer:
                 value = value[1:-1].replace('\\"', '"').replace('\\\\', '\\')
             yield (kind, value)
 
-    def peek(self) -> tuple[str, str] | None:
+    def peek(self) -> Optional[tuple[str, str]]:
         """Look at next token without consuming."""
         if self.token_pos < len(self.tokens):
             return self.tokens[self.token_pos]
         return None
 
-    def next(self) -> tuple[str, str] | None:
+    def next(self) -> Optional[tuple[str, str]]:
         """Consume and return next token."""
         token = self.peek()
         if token:
