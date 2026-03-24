@@ -5,7 +5,7 @@ Defines settings for flex thickness, stiffener regions, and validation parameter
 """
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Union
 import json
 from pathlib import Path
 
@@ -127,14 +127,14 @@ class FlexConfig:
             bend_subdivisions=data.get("bend_subdivisions", 8),
         )
 
-    def save(self, filepath: Path | str) -> None:
+    def save(self, filepath: Union[Path, str]) -> None:
         """Save configuration to JSON file."""
         filepath = Path(filepath)
         with open(filepath, 'w') as f:
             json.dump(self.to_dict(), f, indent=2)
 
     @classmethod
-    def load(cls, filepath: Path | str) -> "FlexConfig":
+    def load(cls, filepath: Union[Path, str]) -> "FlexConfig":
         """Load configuration from JSON file."""
         filepath = Path(filepath)
         if not filepath.exists():
@@ -145,7 +145,7 @@ class FlexConfig:
         return cls.from_dict(data)
 
     @classmethod
-    def load_for_pcb(cls, pcb_filepath: Path | str) -> "FlexConfig":
+    def load_for_pcb(cls, pcb_filepath: Union[Path, str]) -> "FlexConfig":
         """
         Load configuration for a specific PCB file.
 
@@ -156,7 +156,7 @@ class FlexConfig:
         config_path = pcb_path.with_suffix('.flex_config.json')
         return cls.load(config_path)
 
-    def save_for_pcb(self, pcb_filepath: Path | str) -> None:
+    def save_for_pcb(self, pcb_filepath: Union[Path, str]) -> None:
         """
         Save configuration for a specific PCB file.
 
