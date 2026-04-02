@@ -15,7 +15,7 @@
             "show-button": true,
             "scopes": ["pcb"],
             "entrypoint": "ipc_create_fold.py",
-            "icons-light": ["resources/markericon.drawio.svg"]
+            "icons-light": ["resources/icon.png"]
         },
         {
             "identifier": "open-viewer",
@@ -24,7 +24,7 @@
             "show-button": true,
             "scopes": ["pcb"],
             "entrypoint": "ipc_open_viewer.py",
-            "icons-light": ["resources/viewericon.drawio.svg"]
+            "icons-light": ["resources/icon.png"]
         }
     ]
 }
