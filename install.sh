@@ -7,14 +7,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_NAME="com_github_aightech_flexviz"
 PLUGIN_SRC="$SCRIPT_DIR/plugins/$PLUGIN_NAME"
 
-# Detect KiCad version and plugin directory
-detect_kicad_plugin_dir() {
-    # Check for common KiCad plugin locations
-    # KiCad 9.0+ uses 3rdparty/plugins instead of scripting/plugins
+# ---- Plugin directory detection ----
+
+detect_swig_plugin_dir() {
     local KICAD_DIRS=(
-        # IPC API plugin location (KiCad 10+)
-        "$HOME/.local/share/KiCad/10.0/plugins"
-        # SWIG plugin locations (KiCad 7-10)
         "$HOME/.local/share/kicad/10.0/3rdparty/plugins"
         "$HOME/.local/share/kicad/9.0/3rdparty/plugins"
         "$HOME/.local/share/kicad/8.0/3rdparty/plugins"
@@ -23,26 +19,34 @@ detect_kicad_plugin_dir() {
         "$HOME/.kicad/scripting/plugins"
         "$HOME/.kicad_plugins"
     )
-
     for dir in "${KICAD_DIRS[@]}"; do
         if [[ -d "$dir" ]]; then
             echo "$dir"
             return 0
         fi
     done
-
-    # Default to KiCad 10.0 location
     echo "$HOME/.local/share/kicad/10.0/3rdparty/plugins"
 }
 
-PLUGIN_DIR=$(detect_kicad_plugin_dir)
-TARGET_DIR="$PLUGIN_DIR/$PLUGIN_NAME"
+detect_ipc_plugin_dir() {
+    # IPC API uses capitalized "KiCad" and a different path structure
+    local KICAD_DIRS=(
+        "$HOME/.local/share/KiCad/10.0/plugins"
+        "$HOME/.local/share/KiCad/9.0/plugins"
+    )
+    for dir in "${KICAD_DIRS[@]}"; do
+        if [[ -d "$(dirname "$dir")" ]]; then
+            echo "$dir"
+            return 0
+        fi
+    done
+    echo "$HOME/.local/share/KiCad/10.0/plugins"
+}
+
+# ---- Main ----
 
 echo "KiCad Flex Viewer - Installation"
 echo "================================"
-echo ""
-echo "Source directory: $PLUGIN_SRC"
-echo "Target directory: $TARGET_DIR"
 echo ""
 
 # Check source exists
@@ -51,47 +55,83 @@ if [[ ! -d "$PLUGIN_SRC" ]]; then
     exit 1
 fi
 
-# Check if already installed
-if [[ -e "$TARGET_DIR" ]]; then
-    echo "Plugin already installed at: $TARGET_DIR"
-    read -p "Remove and reinstall? [y/N] " -n 1 -r
-    echo ""
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        rm -rf "$TARGET_DIR"
-        echo "Removed existing installation."
-    else
-        echo "Installation cancelled."
-        exit 0
-    fi
-fi
-
-# Create plugins directory if needed
-mkdir -p "$PLUGIN_DIR"
-
-# Option 1: Symlink (for development)
-# Option 2: Copy (for distribution)
-
-read -p "Install as symlink (development) or copy (distribution)? [S/c] " -n 1 -r
+# Choose installation mode
+echo "Installation modes:"
+echo "  [1] SWIG (classic)  - In-process plugin via __init__.py (KiCad 7-10)"
+echo "  [2] IPC API (new)   - Out-of-process plugin via plugin.json (KiCad 9-10+)"
+echo "  [3] Both            - Install to both locations"
+echo ""
+read -p "Choose mode [1/2/3] (default: 1): " -n 1 -r MODE
 echo ""
 
-if [[ $REPLY =~ ^[Cc]$ ]]; then
-    # Copy files
-    echo "Copying files..."
-    cp -r "$PLUGIN_SRC" "$TARGET_DIR"
-    echo "Files copied to: $TARGET_DIR"
-else
-    # Create symlink
-    echo "Creating symlink..."
-    ln -s "$PLUGIN_SRC" "$TARGET_DIR"
-    echo "Symlink created: $TARGET_DIR -> $PLUGIN_SRC"
-fi
+case "$MODE" in
+    2) MODES=("ipc") ;;
+    3) MODES=("swig" "ipc") ;;
+    *) MODES=("swig") ;;
+esac
+
+# Choose install method
+read -p "Install as symlink (development) or copy (distribution)? [S/c] " -n 1 -r METHOD
+echo ""
+
+do_install() {
+    local TARGET_DIR="$1"
+    local LABEL="$2"
+
+    # Remove existing
+    if [[ -e "$TARGET_DIR" ]]; then
+        echo "  Removing existing installation at $TARGET_DIR"
+        rm -rf "$TARGET_DIR"
+    fi
+
+    mkdir -p "$(dirname "$TARGET_DIR")"
+
+    if [[ $METHOD =~ ^[Cc]$ ]]; then
+        cp -r "$PLUGIN_SRC" "$TARGET_DIR"
+        echo "  [$LABEL] Copied to: $TARGET_DIR"
+    else
+        ln -s "$PLUGIN_SRC" "$TARGET_DIR"
+        echo "  [$LABEL] Symlinked: $TARGET_DIR -> $PLUGIN_SRC"
+    fi
+}
+
+echo ""
+for mode in "${MODES[@]}"; do
+    if [[ "$mode" == "swig" ]]; then
+        SWIG_DIR=$(detect_swig_plugin_dir)
+        do_install "$SWIG_DIR/$PLUGIN_NAME" "SWIG"
+    elif [[ "$mode" == "ipc" ]]; then
+        IPC_DIR=$(detect_ipc_plugin_dir)
+        do_install "$IPC_DIR/$PLUGIN_NAME" "IPC"
+    fi
+done
 
 echo ""
 echo "Installation complete!"
 echo ""
-echo "Next steps:"
-echo "1. Restart KiCad PCB Editor (if it's open)"
-echo "2. Go to Tools -> External Plugins"
-echo "3. You should see 'Flex Viewer - Test', 'Create Fold', and 'Open Fold Viewer'"
-echo ""
-echo "To uninstall: rm -rf \"$TARGET_DIR\""
+
+if [[ " ${MODES[*]} " =~ " swig " ]]; then
+    echo "SWIG mode:"
+    echo "  1. Restart KiCad PCB Editor"
+    echo "  2. Go to Tools -> External Plugins"
+    echo "  3. You should see 'Create Fold' and 'Open Fold Viewer'"
+    echo ""
+fi
+
+if [[ " ${MODES[*]} " =~ " ipc " ]]; then
+    echo "IPC mode:"
+    echo "  1. Enable the API: Preferences -> Plugins -> Enable API"
+    echo "  2. Restart KiCad PCB Editor"
+    echo "  3. The plugin appears in Tools -> External Plugins"
+    echo "  Note: kicad-python is auto-installed into the plugin's venv by KiCad"
+    echo ""
+fi
+
+echo "To uninstall:"
+for mode in "${MODES[@]}"; do
+    if [[ "$mode" == "swig" ]]; then
+        echo "  rm -rf \"$(detect_swig_plugin_dir)/$PLUGIN_NAME\""
+    elif [[ "$mode" == "ipc" ]]; then
+        echo "  rm -rf \"$(detect_ipc_plugin_dir)/$PLUGIN_NAME\""
+    fi
+done
