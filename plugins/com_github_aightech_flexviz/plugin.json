@@ -1,0 +1,30 @@
+{
+    "$schema": "https://go.kicad.org/api/schemas/v1",
+    "identifier": "com.github.aightech.flexviz",
+    "name": "Flex Viewer",
+    "description": "3D visualization of folded/bent flex PCBs with fold markers, interactive bend angles, and STEP export",
+    "runtime": {
+        "type": "python",
+        "min_version": "3.9"
+    },
+    "actions": [
+        {
+            "identifier": "create-fold",
+            "name": "Create Fold",
+            "description": "Create a fold marker from the current selection",
+            "show-button": true,
+            "scopes": ["pcb"],
+            "entrypoint": "ipc_create_fold.py",
+            "icons-light": ["resources/markericon.drawio.svg"]
+        },
+        {
+            "identifier": "open-viewer",
+            "name": "Open Fold Viewer",
+            "description": "Open the 3D viewer to visualize the folded flex PCB",
+            "show-button": true,
+            "scopes": ["pcb"],
+            "entrypoint": "ipc_open_viewer.py",
+            "icons-light": ["resources/viewericon.drawio.svg"]
+        }
+    ]
+}
