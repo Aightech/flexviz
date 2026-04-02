@@ -14,6 +14,11 @@ import math
 import pcbnew
 import wx
 
+try:
+    from .fold_math import compute_fold_marker_geometry
+except ImportError:
+    from fold_math import compute_fold_marker_geometry
+
 
 # KiCad internal units are nanometers
 # 1 mm = 1,000,000 nm
@@ -142,38 +147,21 @@ class FoldMarkerCreator:
         """Create a fold marker with two parallel lines and a dimension."""
         created_items = []
 
-        dx = point_b[0] - point_a[0]
-        dy = point_b[1] - point_a[1]
-        length = math.sqrt(dx * dx + dy * dy)
-
-        if length < 1:
+        # Compute geometry in KiCad internal units (points are already in IU)
+        radius_iu = mm_to_iu(radius_mm)
+        geom = compute_fold_marker_geometry(point_a, point_b, angle_degrees, radius_iu)
+        if geom is None:
             return created_items
 
-        # Unit perpendicular vector
-        perp_x = -dy / length
-        perp_y = dx / length
-
-        # Calculate zone width
-        angle_rad = math.radians(abs(angle_degrees))
-        zone_width = radius_mm * angle_rad if angle_rad > 0.001 else 0.1
-
-        # Offset for parallel lines
-        offset = mm_to_iu(zone_width / 2)
-
         # Create two parallel dotted lines
-        line1 = self._create_line(
-            (point_a[0] + perp_x * offset, point_a[1] + perp_y * offset),
-            (point_b[0] + perp_x * offset, point_b[1] + perp_y * offset)
-        )
+        line1 = self._create_line(geom.line1_start, geom.line1_end)
         created_items.append(line1)
 
-        line2 = self._create_line(
-            (point_a[0] - perp_x * offset, point_a[1] - perp_y * offset),
-            (point_b[0] - perp_x * offset, point_b[1] - perp_y * offset)
-        )
+        line2 = self._create_line(geom.line2_start, geom.line2_end)
         created_items.append(line2)
 
         # Create dimension annotation
+        offset = mm_to_iu(geom.zone_width / 2) if geom.zone_width else 0
         dim = self._create_dimension(point_a, point_b, angle_degrees, offset)
         if dim:
             created_items.append(dim)
