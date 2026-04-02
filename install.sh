@@ -29,10 +29,11 @@ detect_swig_plugin_dir() {
 }
 
 detect_ipc_plugin_dir() {
-    # IPC API uses capitalized "KiCad" and a different path structure
+    # IPC API plugins live in <kicad_data>/<version>/plugins/
+    # (same root as SWIG but different subdirectory)
     local KICAD_DIRS=(
-        "$HOME/.local/share/KiCad/10.0/plugins"
-        "$HOME/.local/share/KiCad/9.0/plugins"
+        "$HOME/.local/share/kicad/10.0/plugins"
+        "$HOME/.local/share/kicad/9.0/plugins"
     )
     for dir in "${KICAD_DIRS[@]}"; do
         if [[ -d "$(dirname "$dir")" ]]; then
@@ -40,7 +41,7 @@ detect_ipc_plugin_dir() {
             return 0
         fi
     done
-    echo "$HOME/.local/share/KiCad/10.0/plugins"
+    echo "$HOME/.local/share/kicad/10.0/plugins"
 }
 
 # ---- Main ----
