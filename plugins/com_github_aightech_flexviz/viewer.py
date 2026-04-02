@@ -883,7 +883,8 @@ class FlexViewerFrame(wx.Frame):
     """Main viewer window."""
 
     def __init__(self, parent=None, board_geometry=None, fold_markers=None,
-                 config: FlexConfig = None, pcb: KiCadPCB = None, pcb_filepath: str = None):
+                 config: FlexConfig = None, pcb: KiCadPCB = None, pcb_filepath: str = None,
+                 kicad_ipc=None):
         super().__init__(
             parent,
             title="Flex PCB Viewer",
@@ -902,6 +903,7 @@ class FlexViewerFrame(wx.Frame):
         # Config and PCB reference
         self.pcb = pcb
         self.pcb_filepath = pcb_filepath
+        self.kicad_ipc = kicad_ipc  # IPC connection (None for SWIG mode)
 
         # Load saved config or use provided/default
         if config:
@@ -1680,24 +1682,32 @@ class FlexViewerFrame(wx.Frame):
 
     def on_refresh(self, event):
         """Handle refresh button - reload PCB file from disk."""
-        if not self.pcb_filepath:
-            # No file path - just update mesh with current data
+        if not self.pcb_filepath and not self.kicad_ipc:
+            # No file path and no IPC - just update mesh with current data
             self.update_mesh()
             return
 
         try:
-            # Save current KiCad board state before reloading
-            # (ensures we read latest positions even if user hasn't saved)
-            try:
-                import pcbnew
-                board = pcbnew.GetBoard()
-                if board:
-                    pcbnew.SaveBoard(self.pcb_filepath, board)
-            except Exception:
-                pass  # Running outside KiCad or save failed
-
-            # Reload PCB from disk
-            self.pcb = KiCadPCB.load(self.pcb_filepath)
+            # Try IPC API first (fastest, no disk I/O)
+            if self.kicad_ipc is not None:
+                try:
+                    board = self.kicad_ipc.get_board()
+                    board_str = board.get_as_string()
+                    self.pcb = KiCadPCB.parse(board_str)
+                except Exception:
+                    # IPC failed — fall through to file-based path
+                    if self.pcb_filepath:
+                        self.pcb = KiCadPCB.load(self.pcb_filepath)
+            else:
+                # SWIG path: save board to disk, then parse
+                try:
+                    import pcbnew
+                    board = pcbnew.GetBoard()
+                    if board:
+                        pcbnew.SaveBoard(self.pcb_filepath, board)
+                except Exception:
+                    pass  # Running outside KiCad or save failed
+                self.pcb = KiCadPCB.load(self.pcb_filepath)
             self.board_geometry = extract_geometry(self.pcb)
             new_markers = detect_fold_markers(self.pcb, layer=self.config.marker_layer)
 
