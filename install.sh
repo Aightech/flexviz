@@ -12,6 +12,9 @@ detect_kicad_plugin_dir() {
     # Check for common KiCad plugin locations
     # KiCad 9.0+ uses 3rdparty/plugins instead of scripting/plugins
     local KICAD_DIRS=(
+        # IPC API plugin location (KiCad 10+)
+        "$HOME/.local/share/KiCad/10.0/plugins"
+        # SWIG plugin locations (KiCad 7-10)
         "$HOME/.local/share/kicad/10.0/3rdparty/plugins"
         "$HOME/.local/share/kicad/9.0/3rdparty/plugins"
         "$HOME/.local/share/kicad/8.0/3rdparty/plugins"
