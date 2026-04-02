@@ -15,7 +15,7 @@ try:
     )
     from .bend_transform import FoldDefinition, FoldRecipe, transform_point, transform_point_and_normal, recipe_from_region
     from .markers import FoldMarker
-    from .planar_subdivision import Region, find_containing_region
+    from .planar_subdivision import Region, find_containing_region, build_region_index
     from .model_loader import load_model, expand_kicad_vars, get_loader_status
     from .triangulation import triangulate_polygon, triangulate_with_holes
     from .mesh_types import (
@@ -30,7 +30,7 @@ except ImportError:
     )
     from bend_transform import FoldDefinition, FoldRecipe, transform_point, transform_point_and_normal, recipe_from_region
     from markers import FoldMarker
-    from planar_subdivision import Region, find_containing_region
+    from planar_subdivision import Region, find_containing_region, build_region_index
     from model_loader import load_model, expand_kicad_vars, get_loader_status
     from triangulation import triangulate_polygon, triangulate_with_holes
     from mesh_types import (

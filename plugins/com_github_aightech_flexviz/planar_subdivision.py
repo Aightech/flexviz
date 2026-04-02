@@ -1651,26 +1651,113 @@ def compute_fold_recipes(
                     region.fold_recipe.append((fold, classification, False))
 
 
-def find_containing_region(point: Point, regions: list[Region]) -> Optional[Region]:
+class RegionIndex:
+    """Spatial grid index for fast point-in-region queries.
+
+    Partitions the bounding box of all regions into a grid of cells.
+    Each cell stores references to regions whose bounding box overlaps it.
+    Point queries only test candidate regions from the relevant cell,
+    reducing O(n_regions * n_verts) to ~O(1) amortised.
+    """
+
+    def __init__(self, regions: list[Region], cell_size: float = 2.0):
+        if not regions:
+            self._regions = []
+            self._grid: dict[tuple[int, int], list[Region]] = {}
+            return
+
+        self._regions = regions
+        self._cell_size = cell_size
+
+        # Compute global bounding box
+        all_xs = [v[0] for r in regions for v in r.outline]
+        all_ys = [v[1] for r in regions for v in r.outline]
+        self._min_x = min(all_xs)
+        self._min_y = min(all_ys)
+
+        # Build grid: assign each region to every cell its bbox overlaps
+        self._grid = {}
+        for region in regions:
+            rxs = [v[0] for v in region.outline]
+            rys = [v[1] for v in region.outline]
+            r_min_x, r_max_x = min(rxs), max(rxs)
+            r_min_y, r_max_y = min(rys), max(rys)
+
+            cx0 = int((r_min_x - self._min_x) / cell_size)
+            cx1 = int((r_max_x - self._min_x) / cell_size)
+            cy0 = int((r_min_y - self._min_y) / cell_size)
+            cy1 = int((r_max_y - self._min_y) / cell_size)
+
+            for cx in range(cx0, cx1 + 1):
+                for cy in range(cy0, cy1 + 1):
+                    key = (cx, cy)
+                    if key not in self._grid:
+                        self._grid[key] = []
+                    self._grid[key].append(region)
+
+    def find(self, point: Point) -> Optional[Region]:
+        """Find the region containing a point. Returns None if outside all regions."""
+        if not self._regions:
+            return None
+
+        cx = int((point[0] - self._min_x) / self._cell_size)
+        cy = int((point[1] - self._min_y) / self._cell_size)
+
+        candidates = self._grid.get((cx, cy))
+        if not candidates:
+            return None
+
+        for region in candidates:
+            if point_in_polygon(point, region.outline):
+                in_hole = False
+                for hole in region.holes:
+                    if point_in_polygon(point, hole):
+                        in_hole = True
+                        break
+                if not in_hole:
+                    return region
+
+        return None
+
+
+def build_region_index(regions: list[Region], cell_size: float = 2.0) -> RegionIndex:
+    """Build a spatial index for fast point-in-region queries."""
+    return RegionIndex(regions, cell_size)
+
+
+# Module-level cache for the spatial index, keyed by id of region list
+_region_index_cache: dict[int, RegionIndex] = {}
+
+
+def find_containing_region(point: Point, regions, region_index: Optional[RegionIndex] = None) -> Optional[Region]:
     """
     Find the region that contains a given point.
+
+    Uses a spatial grid index for fast O(1) lookups. The index is built
+    automatically on first call for a given region list and cached.
 
     Args:
         point: (x, y) coordinates
         regions: List of Region objects
+        region_index: Optional pre-built spatial index (avoids cache lookup)
 
     Returns:
         The containing Region, or None if point is outside all regions.
     """
-    for region in regions:
-        if point_in_polygon(point, region.outline):
-            # Check it's not inside a hole
-            in_hole = False
-            for hole in region.holes:
-                if point_in_polygon(point, hole):
-                    in_hole = True
-                    break
-            if not in_hole:
-                return region
+    if not regions:
+        return None
 
-    return None
+    # Use provided index, or auto-build from cache
+    if region_index is None:
+        key = id(regions)
+        region_index = _region_index_cache.get(key)
+        if region_index is None:
+            region_index = RegionIndex(regions)
+            _region_index_cache[key] = region_index
+
+    return region_index.find(point)
+
+
+def clear_region_index_cache():
+    """Clear the cached spatial indices (call when regions change)."""
+    _region_index_cache.clear()

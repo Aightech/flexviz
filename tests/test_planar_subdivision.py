@@ -593,5 +593,52 @@ class TestFoldRecipeEdgeCases:
                 assert entry1[1] == entry2[1]
 
 
+class TestRegionIndex:
+    """Tests for spatial grid index."""
+
+    def test_find_in_single_region(self):
+        from planar_subdivision import RegionIndex, Region
+        region = Region(
+            outline=[(0, 0), (10, 0), (10, 10), (0, 10)],
+            holes=[], index=0
+        )
+        idx = RegionIndex([region])
+        assert idx.find((5, 5)) is region
+        assert idx.find((15, 5)) is None
+
+    def test_find_correct_region_among_many(self):
+        from planar_subdivision import RegionIndex, Region
+        r1 = Region(outline=[(0, 0), (5, 0), (5, 10), (0, 10)], holes=[], index=0)
+        r2 = Region(outline=[(5, 0), (10, 0), (10, 10), (5, 10)], holes=[], index=1)
+        idx = RegionIndex([r1, r2])
+        assert idx.find((2, 5)) is r1
+        assert idx.find((7, 5)) is r2
+
+    def test_find_respects_holes(self):
+        from planar_subdivision import RegionIndex, Region
+        region = Region(
+            outline=[(0, 0), (10, 0), (10, 10), (0, 10)],
+            holes=[[(3, 3), (7, 3), (7, 7), (3, 7)]],
+            index=0
+        )
+        idx = RegionIndex([region])
+        assert idx.find((1, 1)) is region
+        assert idx.find((5, 5)) is None  # Inside hole
+
+    def test_auto_cache_in_find_containing_region(self):
+        from planar_subdivision import find_containing_region, Region, clear_region_index_cache
+        clear_region_index_cache()
+        regions = [Region(outline=[(0, 0), (10, 0), (10, 10), (0, 10)], holes=[], index=0)]
+        # First call builds cache, second uses it — both should work
+        assert find_containing_region((5, 5), regions) is regions[0]
+        assert find_containing_region((5, 5), regions) is regions[0]
+        assert find_containing_region((15, 5), regions) is None
+
+    def test_empty_regions(self):
+        from planar_subdivision import RegionIndex
+        idx = RegionIndex([])
+        assert idx.find((0, 0)) is None
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

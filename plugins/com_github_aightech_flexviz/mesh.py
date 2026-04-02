@@ -97,12 +97,12 @@ try:
     from .geometry import Polygon, BoardGeometry, refine_outline_for_folds
     from .bend_transform import FoldDefinition
     from .markers import FoldMarker
-    from .planar_subdivision import split_board_into_regions, Region
+    from .planar_subdivision import split_board_into_regions, Region, clear_region_index_cache
 except ImportError:
     from geometry import Polygon, BoardGeometry, refine_outline_for_folds
     from bend_transform import FoldDefinition
     from markers import FoldMarker
-    from planar_subdivision import split_board_into_regions, Region
+    from planar_subdivision import split_board_into_regions, Region, clear_region_index_cache
 
 
 # ============================================================================
@@ -242,6 +242,7 @@ def compute_regions(board, markers, num_bend_subdivisions=1, apply_bend=True):
     Returns (regions, active_regions) where active_regions is None when
     bending is disabled.
     """
+    clear_region_index_cache()  # Invalidate spatial index when regions change
     regions = None
     if markers and board.outline.vertices:
         # Refine arc segments that cross fold zones
