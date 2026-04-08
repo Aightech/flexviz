@@ -1452,14 +1452,15 @@ def _build_bend_skin_faces(region, recipe_defs, thickness, original_segments,
                 continue
             surface = surf_maker.Surface()
 
-            # Build trimming wire with B-spline edges for perimeter chains
-            # and straight lines for fold-boundary edges.
+            # Build trimming wire: B-spline for perimeter chains,
+            # straight lines for fold boundaries.
+            # Use the same chain structure as the side faces.
             from OCP.GeomAPI import GeomAPI_PointsToBSpline as _PtsBSpl
             from OCP.TColgp import TColgp_Array1OfPnt as _Arr1Pnt
 
             nv = len(region.outline)
 
-            def _outline_pt(idx):
+            def _pt3d(idx):
                 p2d = region.outline[idx % nv]
                 pt = transform_point(p2d, recipe_defs)
                 if bottom:
@@ -1467,44 +1468,43 @@ def _build_bend_skin_faces(region, recipe_defs, thickness, original_segments,
                     pt = _add(pt, _scale(nrm, -thickness))
                 return pt
 
-            # Classify edges as perimeter vs fold-boundary
-            is_perim = []
-            for i in range(nv):
-                p1 = region.outline[i]
-                p2 = region.outline[(i + 1) % nv]
-                key = _edge_key_2d(p1, p2)
-                is_perim.append(
-                    (edge_freq.get(key, 1) < 2) if edge_freq else True)
+            # Build the wire edge-by-edge in outline order (forward).
+            # Then reverse the entire wire for the bottom face.
+            # Start from an internal (fold-boundary) edge so that
+            # perimeter chains don't split across the wrap-around.
+            wire_edges_fwd = []
 
-            # Walk the outline in order (CCW for top, CW for bottom)
-            if reverse:
-                order = list(range(nv - 1, -1, -1))
-            else:
-                order = list(range(nv))
+            def _is_edge_perim(ei):
+                k = _edge_key_2d(region.outline[ei],
+                                 region.outline[(ei + 1) % nv])
+                return (edge_freq.get(k, 1) < 2) if edge_freq else True
 
-            wire_edges = []
+            start = 0
+            for s in range(nv):
+                if not _is_edge_perim(s):
+                    start = s
+                    break
+
             i = 0
-            while i < len(order):
-                idx = order[i]
-                edge_i = idx if not reverse else (idx - 1) % nv
-                # Check perim status of the ORIGINAL edge
-                perim = is_perim[min(idx, (idx + 1) % nv) if not reverse
-                                 else min((idx - 1) % nv, idx)]
-                # For perimeter edges: collect a contiguous chain and B-spline it
-                if is_perim[order[i] if not reverse else (order[i] - 1) % nv]:
-                    chain_pts = [_outline_pt(order[i])]
-                    while i < len(order):
-                        ei = order[i] if not reverse else (order[i] - 1) % nv
-                        if not is_perim[ei]:
+            while i < nv:
+                ei = (start + i) % nv
+                is_p = _is_edge_perim(ei)
+
+                if is_p:
+                    # Collect contiguous perimeter chain
+                    chain_idx = [ei]
+                    while i < nv:
+                        ej = (start + i) % nv
+                        if not _is_edge_perim(ej):
                             break
-                        chain_pts.append(_outline_pt(
-                            order[(i + 1) % len(order)]))
+                        chain_idx.append((ej + 1) % nv)
                         i += 1
-                    # Build B-spline edge through chain points
-                    if len(chain_pts) >= 3:
-                        arr = _Arr1Pnt(1, len(chain_pts))
-                        for k, pt in enumerate(chain_pts):
-                            arr.SetValue(k + 1, gp_Pnt(pt[0], pt[1], pt[2]))
+                    pts = [_pt3d(idx) for idx in chain_idx]
+                    if len(pts) >= 3:
+                        arr = _Arr1Pnt(1, len(pts))
+                        for k2, pt in enumerate(pts):
+                            arr.SetValue(k2 + 1,
+                                         gp_Pnt(pt[0], pt[1], pt[2]))
                         bsp = _PtsBSpl(arr, 3, 8)
                         if bsp.IsDone():
                             from OCP.BRepBuilderAPI import \
@@ -1512,23 +1512,29 @@ def _build_bend_skin_faces(region, recipe_defs, thickness, original_segments,
                             emk = _MkE(bsp.Curve())
                             emk.Build()
                             if emk.IsDone():
-                                wire_edges.append(Edge(emk.Shape()))
+                                wire_edges_fwd.append(Edge(emk.Shape()))
                                 continue
                     # Fallback: line segments
-                    for k in range(len(chain_pts) - 1):
-                        d = _sub(chain_pts[k + 1], chain_pts[k])
+                    for k2 in range(len(pts) - 1):
+                        d = _sub(pts[k2 + 1], pts[k2])
                         if math.sqrt(_dot(d, d)) > 1e-9:
-                            wire_edges.append(Edge.make_line(
-                                _vec(chain_pts[k]),
-                                _vec(chain_pts[k + 1])))
+                            wire_edges_fwd.append(Edge.make_line(
+                                _vec(pts[k2]), _vec(pts[k2 + 1])))
                 else:
-                    # Fold-boundary edge: straight line
-                    p1 = _outline_pt(order[i])
-                    p2 = _outline_pt(order[(i + 1) % len(order)])
+                    p1 = _pt3d(ei)
+                    p2 = _pt3d((ei + 1) % nv)
                     d = _sub(p2, p1)
                     if math.sqrt(_dot(d, d)) > 1e-9:
-                        wire_edges.append(Edge.make_line(_vec(p1), _vec(p2)))
+                        wire_edges_fwd.append(
+                            Edge.make_line(_vec(p1), _vec(p2)))
                     i += 1
+
+            if reverse:
+                # Reverse the wire for CW winding (bottom face)
+                wire_edges = [Edge(e.wrapped.Reversed())
+                              for e in reversed(wire_edges_fwd)]
+            else:
+                wire_edges = wire_edges_fwd
 
             wire = _make_wire(wire_edges)
             face_maker = BRepBuilderAPI_MakeFace(surface, wire.wrapped, True)
@@ -1563,25 +1569,27 @@ def _build_bend_skin_faces(region, recipe_defs, thickness, original_segments,
         is_perim = (edge_freq.get(key, 1) < 2) if edge_freq else True
         is_perimeter.append(is_perim)
 
-    # Extract contiguous perimeter chains (sequences of consecutive
-    # perimeter edges, collecting the vertex indices)
+    # Extract contiguous perimeter chains.
+    # Start from an internal edge to avoid splitting a chain at the wrap.
     chains = []
+    start_side = 0
+    for s in range(nv):
+        if not is_perimeter[s]:
+            start_side = s
+            break
     current_chain = []
-    for i in range(nv):
-        if is_perimeter[i]:
+    for k in range(nv):
+        ei = (start_side + k) % nv
+        if is_perimeter[ei]:
             if not current_chain:
-                current_chain.append(i)
-            current_chain.append((i + 1) % nv)
+                current_chain.append(ei)
+            current_chain.append((ei + 1) % nv)
         else:
             if current_chain:
                 chains.append(current_chain)
                 current_chain = []
     if current_chain:
-        # Check if it wraps around and connects to the first chain
-        if chains and is_perimeter[(nv - 1)] and is_perimeter[0]:
-            chains[0] = current_chain + chains[0][1:]
-        else:
-            chains.append(current_chain)
+        chains.append(current_chain)
 
     def _bspline_wire(pts_3d):
         """Fit a B-spline through 3D points and return a single-edge Wire."""
