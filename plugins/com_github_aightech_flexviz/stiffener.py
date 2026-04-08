@@ -32,12 +32,15 @@ class StiffenerRegion:
         layer: Source KiCad layer name
         thickness: Stiffener material thickness in mm
         side: Which side of the flex the stiffener is bonded to
+        segments: Arc/line segment metadata from KiCad (for exact STEP export)
     """
     outline: Polygon
     cutouts: list[Polygon]
     layer: str
     thickness: float
     side: str  # "top" or "bottom"
+    segments: list = None  # outline segment dicts with type/start/end/center/radius/mid
+    cutout_segments: list = None  # parallel to cutouts: list of segment dicts per cutout
 
     @property
     def area(self) -> float:
@@ -138,24 +141,24 @@ def _extract_stiffeners_from_layer(
     Returns:
         List of StiffenerRegion objects with associated cutouts
     """
-    polygons = pcb.get_layer_polygon_vertices(layer)
+    layer_polys = pcb.get_layer_polygons(layer)
 
-    if not polygons:
+    if not layer_polys:
         return []
 
     # Filter out degenerate polygons
-    valid_polygons = [p for p in polygons if len(p) >= 3]
-    if not valid_polygons:
+    valid = [lp for lp in layer_polys if len(lp.vertices) >= 3]
+    if not valid:
         return []
 
+    valid_polygons = [lp.vertices for lp in valid]
+    valid_segments = [lp.segments for lp in valid]  # may be empty lists
+
     # Determine which polygons are holes by checking containment
-    # A polygon is a hole if its centroid is inside another polygon
-    # and it has smaller area (to handle concentric shapes)
     n = len(valid_polygons)
     is_hole = [False] * n
-    hole_parent = [-1] * n  # Index of containing polygon for each hole
+    hole_parent = [-1] * n
 
-    # Pre-compute areas
     areas = [abs(_signed_polygon_area(p)) for p in valid_polygons]
 
     for i in range(n):
@@ -164,45 +167,49 @@ def _extract_stiffeners_from_layer(
             if i == j:
                 continue
             if point_in_polygon(center_i, valid_polygons[j]):
-                # Polygon i's center is inside polygon j
-                # It's a hole if it has smaller area (nested inside larger)
                 if areas[i] < areas[j]:
                     is_hole[i] = True
                     hole_parent[i] = j
                     break
 
-    # Collect outer boundaries (non-holes)
     outer_indices = [i for i in range(n) if not is_hole[i]]
-
-    # Build mapping: outer_index -> list of holes
-    outer_to_holes: dict[int, list[Polygon]] = {i: [] for i in outer_indices}
+    # Track holes with their segments: (polygon_index, vertices, segments)
+    outer_to_holes: dict[int, list[tuple[int, Polygon, list]]] = {
+        i: [] for i in outer_indices}
 
     for i in range(n):
         if is_hole[i] and hole_parent[i] in outer_to_holes:
-            outer_to_holes[hole_parent[i]].append(valid_polygons[i])
+            outer_to_holes[hole_parent[i]].append(
+                (i, valid_polygons[i], valid_segments[i]))
 
-    # Create StiffenerRegion objects
-    # Ensure outer boundaries have CCW winding
     result = []
     for i in outer_indices:
         outline = valid_polygons[i]
-        # Ensure CCW winding for outer boundary
+        segs = valid_segments[i]
+
         if _signed_polygon_area(outline) < 0:
             outline = list(reversed(outline))
+            if segs:
+                segs = list(reversed(segs))
 
-        # Ensure CW winding for holes
         cutouts = []
-        for hole in outer_to_holes[i]:
+        cut_segs_list = []
+        for _, hole, hole_segs in outer_to_holes[i]:
             if _signed_polygon_area(hole) > 0:
                 hole = list(reversed(hole))
+                if hole_segs:
+                    hole_segs = list(reversed(hole_segs))
             cutouts.append(hole)
+            cut_segs_list.append(hole_segs if hole_segs else None)
 
         result.append(StiffenerRegion(
             outline=outline,
             cutouts=cutouts,
             layer=layer,
             thickness=thickness,
-            side=side
+            side=side,
+            segments=segs if segs else None,
+            cutout_segments=cut_segs_list if any(cut_segs_list) else None,
         ))
 
     return result

@@ -194,6 +194,7 @@ class LayerPolygon:
     """A closed polygon from a user/graphic layer."""
     vertices: list  # list of (x, y) tuples
     layer: str
+    segments: list = field(default_factory=list)  # OutlineSegment-compatible dicts (optional)
 
 
 @dataclass
@@ -1275,12 +1276,14 @@ class KiCadPCB:
         Returns:
             List of LayerPolygon objects
         """
+        import math
         if layer in self._layer_polygons_cache:
             return self._layer_polygons_cache[layer]
 
         polygons = []
 
         # 1. Extract explicit polygons (gr_poly)
+        #    KiCad 10+ can store arcs inside pts as (arc (start ..) (mid ..) (end ..))
         for poly in self.root.find_all('gr_poly'):
             layer_expr = poly['layer']
             if not layer_expr or layer_expr.get_string(0) != layer:
@@ -1289,16 +1292,52 @@ class KiCadPCB:
             pts = poly['pts']
             if pts:
                 vertices = []
+                segments = []
+                # Plain xy points
                 for xy in pts.find_all('xy'):
                     vertices.append((xy.get_float(0), xy.get_float(1)))
+                # Arc sub-elements (KiCad 10+)
+                for arc in pts.find_all('arc'):
+                    a_start = arc['start']
+                    a_mid = arc['mid']
+                    a_end = arc['end']
+                    if a_start and a_end:
+                        sp = (a_start.get_float(0), a_start.get_float(1))
+                        ep = (a_end.get_float(0), a_end.get_float(1))
+                        mp = (a_mid.get_float(0), a_mid.get_float(1)) if a_mid else None
+                        vertices.append(sp)
+                        center = None
+                        radius = 0.0
+                        if mp:
+                            ax, ay = sp
+                            bx, by = mp
+                            cx, cy = ep
+                            d = 2 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by))
+                            if abs(d) > 1e-10:
+                                ux = ((ax*ax + ay*ay) * (by - cy) + (bx*bx + by*by) * (cy - ay) + (cx*cx + cy*cy) * (ay - by)) / d
+                                uy = ((ax*ax + ay*ay) * (cx - bx) + (bx*bx + by*by) * (ax - cx) + (cx*cx + cy*cy) * (bx - ax)) / d
+                                center = (ux, uy)
+                                radius = math.sqrt((ax - ux)**2 + (ay - uy)**2)
+                        segments.append({
+                            'type': 'arc', 'start': sp, 'end': ep,
+                            'mid': mp, 'center': center, 'radius': radius,
+                        })
                 if len(vertices) >= 3:
-                    polygons.append(LayerPolygon(vertices=vertices, layer=layer))
+                    polygons.append(LayerPolygon(
+                        vertices=vertices, layer=layer,
+                        segments=segments if segments else []))
 
         # 2. Extract rectangles (gr_rect) and convert to polygons
+        #    Rounded rectangles (with radius) are deferred to step 4
+        #    so their arc metadata is preserved.
         for rect in self.root.find_all('gr_rect'):
             layer_expr = rect['layer']
             if not layer_expr or layer_expr.get_string(0) != layer:
                 continue
+
+            radius_expr = rect['radius']
+            if radius_expr and radius_expr.get_float(0) > 0:
+                continue  # handled in step 4 with arc segments
 
             start = rect['start']
             end = rect['end']
@@ -1337,7 +1376,8 @@ class KiCadPCB:
                     polygons.append(LayerPolygon(vertices=vertices, layer=layer))
 
         # 4. Extract connected line/arc segments and form closed polygons
-        segments = []
+        #    Preserve arc metadata (center, radius, mid) for exact STEP export.
+        raw_segments = []  # list of dicts with type/start/end/mid/center/radius
 
         for line in self.root.find_all('gr_line'):
             layer_expr = line['layer']
@@ -1347,10 +1387,11 @@ class KiCadPCB:
             start = line['start']
             end = line['end']
             if start and end:
-                segments.append((
-                    (start.get_float(0), start.get_float(1)),
-                    (end.get_float(0), end.get_float(1))
-                ))
+                raw_segments.append({
+                    'type': 'line',
+                    'start': (start.get_float(0), start.get_float(1)),
+                    'end': (end.get_float(0), end.get_float(1)),
+                })
 
         for arc in self.root.find_all('gr_arc'):
             layer_expr = arc['layer']
@@ -1361,19 +1402,116 @@ class KiCadPCB:
             mid = arc['mid']
             end = arc['end']
             if start and end:
-                arc_segments = self._linearize_arc(
-                    (start.get_float(0), start.get_float(1)),
-                    (mid.get_float(0), mid.get_float(1)) if mid else None,
-                    (end.get_float(0), end.get_float(1))
-                )
-                segments.extend(arc_segments)
+                start_pt = (start.get_float(0), start.get_float(1))
+                end_pt = (end.get_float(0), end.get_float(1))
+                mid_pt = (mid.get_float(0), mid.get_float(1)) if mid else None
 
-        # Order segments into closed polygons
-        if segments:
-            ordered_polygons = self._order_segments(segments)
-            for vertices in ordered_polygons:
-                if len(vertices) >= 3:
-                    polygons.append(LayerPolygon(vertices=vertices, layer=layer))
+                center = None
+                radius = 0.0
+                if mid_pt:
+                    ax, ay = start_pt
+                    bx, by = mid_pt
+                    cx, cy = end_pt
+                    d = 2 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by))
+                    if abs(d) > 1e-10:
+                        ux = ((ax*ax + ay*ay) * (by - cy) + (bx*bx + by*by) * (cy - ay) + (cx*cx + cy*cy) * (ay - by)) / d
+                        uy = ((ax*ax + ay*ay) * (cx - bx) + (bx*bx + by*by) * (ax - cx) + (cx*cx + cy*cy) * (bx - ax)) / d
+                        center = (ux, uy)
+                        radius = math.sqrt((ax - ux)**2 + (ay - uy)**2)
+
+                raw_segments.append({
+                    'type': 'arc',
+                    'start': start_pt,
+                    'end': end_pt,
+                    'mid': mid_pt,
+                    'center': center,
+                    'radius': radius,
+                })
+
+        # Only handle rounded gr_rect here (sharp ones already handled in step 2)
+        for rect in self.root.find_all('gr_rect'):
+            layer_expr = rect['layer']
+            if not layer_expr or layer_expr.get_string(0) != layer:
+                continue
+
+            radius_expr = rect['radius']
+            r = radius_expr.get_float(0) if radius_expr else 0.0
+            if r <= 0:
+                continue  # sharp rects already handled in step 2
+
+            start = rect['start']
+            end = rect['end']
+            if not (start and end):
+                continue
+
+            x1, y1 = start.get_float(0), start.get_float(1)
+            x2, y2 = end.get_float(0), end.get_float(1)
+            if x1 > x2:
+                x1, x2 = x2, x1
+            if y1 > y2:
+                y1, y2 = y2, y1
+
+            # Rounded rectangle: 4 lines + 4 quarter-circle arcs
+            r = min(r, (x2 - x1) / 2, (y2 - y1) / 2)
+
+            # Bottom edge
+            raw_segments.append({'type': 'line',
+                'start': (x1 + r, y1), 'end': (x2 - r, y1)})
+            # BR corner arc (center at x2-r, y1+r)
+            raw_segments.append({'type': 'arc',
+                'start': (x2 - r, y1), 'end': (x2, y1 + r),
+                'mid': (x2 - r + r * math.cos(-math.pi/4),
+                        y1 + r + r * math.sin(-math.pi/4)),
+                'center': (x2 - r, y1 + r), 'radius': r})
+            # Right edge
+            raw_segments.append({'type': 'line',
+                'start': (x2, y1 + r), 'end': (x2, y2 - r)})
+            # TR corner arc
+            raw_segments.append({'type': 'arc',
+                'start': (x2, y2 - r), 'end': (x2 - r, y2),
+                'mid': (x2 - r + r * math.cos(math.pi/4),
+                        y2 - r + r * math.sin(math.pi/4)),
+                'center': (x2 - r, y2 - r), 'radius': r})
+            # Top edge
+            raw_segments.append({'type': 'line',
+                'start': (x2 - r, y2), 'end': (x1 + r, y2)})
+            # TL corner arc
+            raw_segments.append({'type': 'arc',
+                'start': (x1 + r, y2), 'end': (x1, y2 - r),
+                'mid': (x1 + r + r * math.cos(3 * math.pi/4),
+                        y2 - r + r * math.sin(3 * math.pi/4)),
+                'center': (x1 + r, y2 - r), 'radius': r})
+            # Left edge
+            raw_segments.append({'type': 'line',
+                'start': (x1, y2 - r), 'end': (x1, y1 + r)})
+            # BL corner arc
+            raw_segments.append({'type': 'arc',
+                'start': (x1, y1 + r), 'end': (x1 + r, y1),
+                'mid': (x1 + r + r * math.cos(5 * math.pi/4),
+                        y1 + r + r * math.sin(5 * math.pi/4)),
+                'center': (x1 + r, y1 + r), 'radius': r})
+
+        if raw_segments:
+            if hasattr(self, '_order_segments_with_arcs'):
+                ordered = self._order_segments_with_arcs(raw_segments)
+                for seg_list in ordered:
+                    verts = [s['start'] for s in seg_list]
+                    if len(verts) >= 3:
+                        polygons.append(LayerPolygon(
+                            vertices=verts, layer=layer, segments=seg_list))
+            else:
+                # Fallback: linearize arcs and use plain ordering
+                lin_segs = []
+                for s in raw_segments:
+                    if s['type'] == 'arc' and s.get('mid'):
+                        lin_segs.extend(self._linearize_arc(
+                            s['start'], s['mid'], s['end']))
+                    else:
+                        lin_segs.append((s['start'], s['end']))
+                for vertices in self._order_segments(lin_segs):
+                    if len(vertices) >= 3:
+                        polygons.append(LayerPolygon(
+                            vertices=vertices, layer=layer))
 
         self._layer_polygons_cache[layer] = polygons
         return polygons

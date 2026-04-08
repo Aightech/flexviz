@@ -95,6 +95,87 @@ def segment_line_intersection(
     return (t, (px, py))
 
 
+def arc_line_intersection(
+    arc_start: Point, arc_end: Point,
+    center: Point, radius: float,
+    line: LineEquation
+) -> list[Point]:
+    """Find intersection points of a circular arc with an infinite line.
+
+    The arc goes from *arc_start* to *arc_end* on the circle defined by
+    *center* and *radius*.  Only points between the two endpoints (in
+    angular span) are returned.
+
+    Returns list of intersection points (may be 0, 1, or 2).
+    """
+    import math
+    a, b, c = line
+    # Distance from circle center to line
+    d = (a * center[0] + b * center[1] + c) / math.sqrt(a * a + b * b)
+    if abs(d) > radius + 1e-6:
+        return []  # no intersection
+
+    # Foot of perpendicular from center to line
+    norm = math.sqrt(a * a + b * b)
+    fx = center[0] - a * d / norm
+    fy = center[1] - b * d / norm
+
+    # Half-chord length
+    h2 = radius * radius - d * d
+    if h2 < 0:
+        h2 = 0
+    h = math.sqrt(h2)
+
+    # Direction along the line
+    dx, dy = -b / norm, a / norm
+
+    candidates = [(fx + h * dx, fy + h * dy),
+                  (fx - h * dx, fy - h * dy)]
+
+    # Filter to points on the arc's angular span
+    a_start = math.atan2(arc_start[1] - center[1], arc_start[0] - center[0])
+    a_end = math.atan2(arc_end[1] - center[1], arc_end[0] - center[0])
+
+    # Determine sweep direction using cross product (same as _recover_arcs)
+    sx = arc_start[0] - center[0]
+    sy = arc_start[1] - center[1]
+    ex = arc_end[0] - center[0]
+    ey = arc_end[1] - center[1]
+    ccw = (sx * ey - sy * ex) > 0
+
+    def _in_arc(pt):
+        a_pt = math.atan2(pt[1] - center[1], pt[0] - center[0])
+        if ccw:
+            # CCW from a_start to a_end
+            sweep = a_end - a_start
+            if sweep <= 0:
+                sweep += 2 * math.pi
+            da = a_pt - a_start
+            if da < 0:
+                da += 2 * math.pi
+            return 1e-6 < da < sweep - 1e-6
+        else:
+            # CW from a_start to a_end
+            sweep = a_start - a_end
+            if sweep <= 0:
+                sweep += 2 * math.pi
+            da = a_start - a_pt
+            if da < 0:
+                da += 2 * math.pi
+            return 1e-6 < da < sweep - 1e-6
+
+    result = []
+    seen = set()
+    for pt in candidates:
+        key = (round(pt[0], 6), round(pt[1], 6))
+        if key in seen:
+            continue
+        seen.add(key)
+        if _in_arc(pt):
+            result.append(pt)
+    return result
+
+
 def polygon_centroid(polygon: Polygon) -> Point:
     """Calculate centroid of a polygon."""
     if len(polygon) == 0:
@@ -176,7 +257,8 @@ class PlanarSubdivision:
         self,
         outer: Polygon,
         holes: list[Polygon],
-        cutting_lines: list[CuttingLine]
+        cutting_lines: list[CuttingLine],
+        arc_segments: list = None,
     ):
         """
         Initialize planar subdivision.
@@ -187,10 +269,15 @@ class PlanarSubdivision:
             cutting_lines: List of (line_eq, p1, p2) tuples where:
                 - line_eq is (a, b, c) for ax + by + c = 0
                 - p1, p2 define the extent of the cutting line
+            arc_segments: Optional list of OutlineSegment objects with arc
+                metadata.  When provided, cutting-line intersections with
+                arc edges are computed on the true arc circle instead of
+                the chord, preventing gaps at fold–arc boundaries.
         """
         self.outer = ensure_ccw(outer)
         self.holes = [ensure_cw(h) for h in holes]
         self.cutting_lines = cutting_lines
+        self.arc_segments = arc_segments or []
 
         # Populated by compute()
         self.vertices: list[Point] = []
@@ -227,6 +314,11 @@ class PlanarSubdivision:
     ) -> list[tuple[Point, Point]]:
         """
         Collect edges from a polygon, splitting at cutting line intersections.
+
+        When ``self.arc_segments`` is populated, edges that lie on an
+        original arc are intersected using true arc–line math instead of
+        chord–line math.  This keeps intersection points on the arc
+        circle so downstream arc recovery (``_recover_arcs``) succeeds.
         """
         edges = []
         n = len(polygon)
@@ -775,7 +867,8 @@ def split_board_into_regions(
     outline: Polygon,
     holes: list[Polygon],
     markers: list,  # list[FoldMarker]
-    num_bend_subdivisions: int = 1
+    num_bend_subdivisions: int = 1,
+    arc_segments: list = None,
 ) -> list[Region]:
     """
     Split a board into regions along fold markers.
@@ -820,7 +913,8 @@ def split_board_into_regions(
         cutting_lines.extend(lines)
 
     # Run planar subdivision
-    subdivision = PlanarSubdivision(outline, holes, cutting_lines)
+    subdivision = PlanarSubdivision(outline, holes, cutting_lines,
+                                     arc_segments=arc_segments)
     all_regions = subdivision.compute()
     valid_regions = filter_valid_board_regions(all_regions, outline, holes)
     regions_with_holes = associate_holes_with_regions(valid_regions, holes, cutting_lines)

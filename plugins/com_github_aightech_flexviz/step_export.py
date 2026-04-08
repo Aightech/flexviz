@@ -51,6 +51,11 @@ def _point_on_arc(pt, arc_segment, tolerance=0.01):
     Verifies:
     1. Distance from point to arc center matches radius (within tolerance)
     2. Point's angle is within the arc's angular span (using mid point for sweep direction)
+
+    The tolerance is automatically increased for points that may have been
+    created by chord-based subdivision (fold zone cutting).  The maximum
+    sagitta for a chord of length L on a circle of radius R is
+    R - sqrt(R² - (L/2)²).  We use 15% of the radius as the upper bound.
     """
     if arc_segment.type != "arc" or arc_segment.center is None:
         return False
@@ -60,7 +65,9 @@ def _point_on_arc(pt, arc_segment, tolerance=0.01):
     dy = pt[1] - cy
     dist = math.sqrt(dx * dx + dy * dy)
 
-    if abs(dist - arc_segment.radius) > tolerance:
+    # Adaptive tolerance: allow up to 15% of radius for chord-displaced points
+    effective_tol = max(tolerance, arc_segment.radius * 0.15)
+    if abs(dist - arc_segment.radius) > effective_tol:
         return False
 
     # Check angular span using start, mid, end points
@@ -133,16 +140,23 @@ def _recover_arcs(region_outline, original_segments, tolerance=0.01):
                 break
 
         if matched_arc is not None:
-            # Determine sweep direction for THIS edge (p1→p2), not the original arc.
-            # The recovered edge may traverse the arc in the opposite direction from
-            # the original, so we use cross(p1-C, p2-C) to find the short-arc direction.
-            # Positive cross → end is CCW from start → short arc is CCW → same_sense=True.
+            # Determine sweep direction for THIS edge (p1→p2) by checking
+            # which direction keeps the midpoint on the original arc.
+            # The cross-product approach only works for arcs < 180°;
+            # using the original arc's angular span handles all cases.
             cx, cy = matched_arc.center
-            sx = p1[0] - cx
-            sy = p1[1] - cy
-            ex = p2[0] - cx
-            ey = p2[1] - cy
-            ccw = (sx * ey - sy * ex) > 0
+            a_s = math.atan2(p1[1] - cy, p1[0] - cx)
+            a_e = math.atan2(p2[1] - cy, p2[0] - cx)
+            r = matched_arc.radius
+
+            # Compute CCW midpoint and check if it's on the original arc
+            sweep_ccw = a_e - a_s
+            if sweep_ccw <= 0:
+                sweep_ccw += 2 * math.pi
+            a_mid_ccw = a_s + sweep_ccw / 2
+            mid_ccw = (cx + r * math.cos(a_mid_ccw),
+                       cy + r * math.sin(a_mid_ccw))
+            ccw = _point_on_arc(mid_ccw, matched_arc, tolerance)
             tagged.append(TaggedEdge(
                 type="arc",
                 start=p1,
@@ -524,7 +538,7 @@ def _build_bend_region_solid(writer, region, recipe_with_defs, thickness,
         back = entry[2] if len(entry) > 2 else False
         if c == "AFTER":
             f_axis_3d = _apply_rotation(rot, (f.axis[0], f.axis[1], 0.0))
-            rotation_angle = (-f.angle + math.pi) if back else f.angle
+            rotation_angle = -f.angle if back else f.angle
             fold_rot = _rotation_matrix_around_axis(f_axis_3d, rotation_angle)
             rot = _multiply_matrices(fold_rot, rot)
 
@@ -780,68 +794,6 @@ def _build_flat_region_solid(writer, region, recipe_with_defs, thickness,
     return writer.build_flat_solid(outline_3d, holes_3d if holes_3d else None, normal, thickness)
 
 
-def _build_bend_region_faces(writer, region, recipe_with_defs, thickness,
-                             original_segments=None):
-    """Like _build_bend_region_solid but returns face IDs (no shell/brep)."""
-    fold_def = None
-    entered_from_back = False
-    for entry in reversed(recipe_with_defs):
-        if entry[1] == "IN_ZONE":
-            fold_def = entry[0]
-            entered_from_back = entry[2] if len(entry) > 2 else False
-            break
-    if fold_def is None:
-        return _build_flat_region_faces(writer, region, recipe_with_defs, thickness)
-    # Reuse the solid builder's full logic but call build_bend_faces
-    # We duplicate the geometry computation from _build_bend_region_solid
-    # to avoid maintaining two copies. Instead, delegate:
-    brep_id = _build_bend_region_solid(writer, region, recipe_with_defs, thickness,
-                                       original_segments=original_segments)
-    # Extract face IDs from the CLOSED_SHELL that wraps this brep
-    # The brep entity is MANIFOLD_SOLID_BREP('',#shell), shell is brep_id-1
-    shell_id = brep_id - 1
-    for eid, text in reversed(writer._entities):
-        if eid == shell_id and text.startswith("CLOSED_SHELL"):
-            import re as _re
-            face_refs = _re.findall(r'#(\d+)', text)
-            # Remove shell + brep entities (they'll be recreated for the merged solid)
-            writer._entities = [(e, t) for e, t in writer._entities
-                                if e != shell_id and e != brep_id]
-            return [int(r) for r in face_refs]
-    return []
-
-
-def _build_flat_region_faces(writer, region, recipe_with_defs, thickness,
-                             original_segments=None, circle_cutouts=None,
-                             drill_holes=None):
-    """Like _build_flat_region_solid but returns face IDs (no shell/brep)."""
-    normal = _compute_region_normal(region, recipe_with_defs)
-
-    if original_segments:
-        tagged_edges = _recover_arcs(region.outline, original_segments)
-        has_arcs = any(e.type == 'arc' for e in tagged_edges)
-        if has_arcs:
-            top_edges_3d = _transform_tagged_edges_3d(tagged_edges, recipe_with_defs, normal)
-            hole_data = None
-            if region.holes:
-                hole_data = []
-                for hole in region.holes:
-                    n_h = len(hole)
-                    hole_edges_2d = [TaggedEdge(type="line", start=hole[k],
-                                                end=hole[(k+1) % n_h])
-                                     for k in range(n_h)]
-                    hole_edges_3d = _transform_tagged_edges_3d(
-                        hole_edges_2d, recipe_with_defs, normal)
-                    hole_data.append(('polygon', hole_edges_3d))
-            return writer.build_flat_faces_mixed(
-                top_edges_3d, normal, thickness, hole_data=hole_data)
-
-    outline_3d = _snap_to_plane(
-        _transform_polygon_3d(region.outline, recipe_with_defs), normal)
-    holes_3d = [_snap_to_plane(_transform_polygon_3d(h, recipe_with_defs), normal)
-                for h in region.holes]
-    return writer.build_flat_faces(outline_3d, holes_3d if holes_3d else None, normal, thickness)
-
 
 def board_to_step_native(board_geometry, markers, filename, config=None,
                          pcb=None, stiffeners=None, pcb_dir=None,
@@ -892,29 +844,29 @@ def board_to_step_native(board_geometry, markers, filename, config=None,
             num_bend_subdivisions=1
         )
 
-        # Collect all faces from every region into one merged solid
-        all_pcb_faces = []
+        # Build each region as its own independent solid.
+        # Reset the edge cache between regions to prevent cross-region
+        # edge sharing which causes non-manifold topology (edges used
+        # by more than 2 faces) when faces from different regions
+        # reference the same edge entity.
         for region in regions:
+            writer._edge_cache = {}
             recipe_defs = _recipe_with_fold_defs(region.fold_recipe)
 
             if _is_bend_region(region.fold_recipe):
-                face_ids = _build_bend_region_faces(
+                brep_id = _build_bend_region_solid(
                     writer, region, recipe_defs, thickness,
                     original_segments=original_segments,
                 )
             else:
-                face_ids = _build_flat_region_faces(
+                brep_id = _build_flat_region_solid(
                     writer, region, recipe_defs, thickness,
                     original_segments=original_segments,
                     circle_cutouts=circle_cutouts,
                     drill_holes=drill_holes,
                 )
-            all_pcb_faces.extend(face_ids)
-
-        # One MANIFOLD_SOLID_BREP for the entire PCB
-        shell_id = writer.closed_shell(all_pcb_faces)
-        brep_id = writer.manifold_solid_brep(shell_id)
-        writer.add_body(brep_id, "FLEX_PCB")
+            if brep_id is not None:
+                writer.add_body(brep_id, "FLEX_PCB")
 
         # Handle stiffeners
         if stiffeners is None and config is not None and pcb is not None:
@@ -1018,86 +970,76 @@ def _resolve_model_path_for_step(model_path, pcb_dir=None, pcb=None,
 def _compute_component_placement(comp, model_info, thickness, regions):
     """Compute the STEP placement (origin, z_axis, x_axis) for a component.
 
-    Combines model offset/scale/rotation, component rotation, position,
-    back-layer mirroring, and fold recipe transforms into a single
-    AXIS2_PLACEMENT_3D for STEP assembly positioning.
+    Uses the same transform chain as the viewer (model_loader.py):
+    scale → model rotation → model offset → component rotation →
+    back mirror → component position → fold recipe.
+
+    Derives the placement by transforming 4 reference points (origin +
+    unit axis tips) through the full chain, then extracting the
+    AXIS2_PLACEMENT_3D from the result.
 
     Returns:
         (origin, z_axis, x_axis) as 3-tuples, or None if placement fails.
     """
-    # Build rotation matrix from component + model transforms
-    def rot_x(angle):
-        c, s = math.cos(angle), math.sin(angle)
-        return [[1, 0, 0], [0, c, -s], [0, s, c]]
-
-    def rot_y(angle):
-        c, s = math.cos(angle), math.sin(angle)
-        return [[c, 0, s], [0, 1, 0], [-s, 0, c]]
-
-    def rot_z(angle):
-        c, s = math.cos(angle), math.sin(angle)
-        return [[c, -s, 0], [s, c, 0], [0, 0, 1]]
-
-    def mat_mul(A, B):
-        return [[sum(A[i][k] * B[k][j] for k in range(3)) for j in range(3)]
-                for i in range(3)]
-
-    def mat_vec(M, v):
-        return tuple(sum(M[i][j] * v[j] for j in range(3)) for i in range(3))
-
     is_back = comp.layer == "B.Cu"
 
-    # Model rotation (ZYX order as in apply_model_transform)
-    rz = rot_z(math.radians(model_info.rotate[2]))
-    ry = rot_y(math.radians(model_info.rotate[1]))
-    rx = rot_x(math.radians(model_info.rotate[0]))
+    # Same rotation lambdas as apply_model_transform
+    def rot_x(a):
+        c, s = math.cos(a), math.sin(a)
+        return lambda x, y, z: (x, y*c - z*s, y*s + z*c)
+    def rot_y(a):
+        c, s = math.cos(a), math.sin(a)
+        return lambda x, y, z: (x*c + z*s, y, -x*s + z*c)
+    def rot_z(a):
+        c, s = math.cos(a), math.sin(a)
+        return lambda x, y, z: (x*c - y*s, x*s + y*c, z)
 
-    # Component rotation (clockwise = negative Z rotation)
+    rx = rot_x(math.radians(model_info.rotate[0]))
+    ry = rot_y(math.radians(model_info.rotate[1]))
+    rz = rot_z(math.radians(model_info.rotate[2]))
     comp_rz = rot_z(math.radians(-comp.angle))
 
-    # Combined rotation: comp_rz @ rx @ ry @ rz (applied right-to-left)
-    rot = mat_mul(ry, rz)
-    rot = mat_mul(rx, rot)
+    def _flat_transform(x, y, z):
+        """Apply model → component transform (same as viewer, no fold)."""
+        # 1. Scale
+        x *= model_info.scale[0]
+        y *= model_info.scale[1]
+        z *= model_info.scale[2]
+        # 2. Model rotation (ZYX)
+        x, y, z = rz(x, y, z)
+        x, y, z = ry(x, y, z)
+        x, y, z = rx(x, y, z)
+        # 3. Model offset
+        x += model_info.offset[0]
+        y += model_info.offset[1]
+        z += model_info.offset[2]
+        # 4. Component rotation
+        x, y, z = comp_rz(x, y, z)
+        # 5. Back layer
+        if is_back:
+            z = -z - thickness
+        # 6. Component position
+        x += comp.center[0]
+        y += comp.center[1]
+        return (x, y, z)
 
-    # Apply scale (baked into rotation matrix columns)
-    sx, sy, sz = model_info.scale
-    for i in range(3):
-        rot[i][0] *= sx
-        rot[i][1] *= sy
-        rot[i][2] *= sz
+    # Transform 4 reference points to get the full placement
+    origin_flat = _flat_transform(0, 0, 0)
+    x_tip_flat = _flat_transform(1, 0, 0)
+    y_tip_flat = _flat_transform(0, 1, 0)
+    z_tip_flat = _flat_transform(0, 0, 1)
 
-    rot = mat_mul(comp_rz, rot)
-
-    # Back layer mirror: flip Z
-    if is_back:
-        for i in range(3):
-            rot[i][2] = -rot[i][2]
-
-    # Compute origin: model offset → component rotation → back mirror → position
-    off = model_info.offset
-    origin = mat_vec(comp_rz, off)
-
-    if is_back:
-        origin = (origin[0], origin[1], -origin[2] - thickness)
-
-    origin = (origin[0] + comp.center[0],
-              origin[1] + comp.center[1],
-              origin[2])
-
-    # Apply fold recipe if in a folded region
+    # Apply fold recipe
     containing_region = find_containing_region(comp.center, regions)
     if containing_region is not None and containing_region.fold_recipe:
         recipe_defs = _recipe_with_fold_defs(containing_region.fold_recipe)
+
+        origin_3d = transform_point((origin_flat[0], origin_flat[1]), recipe_defs)
         normal = _compute_region_normal(containing_region, recipe_defs)
         n = _normalize(normal)
+        origin_3d = _add(origin_3d, _scale(n, origin_flat[2]))
 
-        # Transform origin (2D→3D via fold recipe, then add Z along normal)
-        base_3d = transform_point((origin[0], origin[1]), recipe_defs)
-        origin = _add(base_3d, _scale(n, origin[2]))
-
-        # Transform rotation axes through the fold
-        # We need to rotate the matrix columns through the fold recipe
-        # Use the fold's cumulative rotation
+        # Build cumulative fold rotation for axis directions
         cum_rot = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
         for entry in recipe_defs:
             f = entry[0]
@@ -1105,18 +1047,20 @@ def _compute_component_placement(comp, model_info, thickness, regions):
             back = entry[2] if len(entry) > 2 else False
             if c == "AFTER":
                 f_axis_3d = _apply_rotation(cum_rot, (f.axis[0], f.axis[1], 0.0))
-                rotation_angle = (-f.angle + math.pi) if back else f.angle
+                rotation_angle = -f.angle if back else f.angle
                 fold_rot = _rotation_matrix_around_axis(f_axis_3d, rotation_angle)
                 cum_rot = _multiply_matrices(fold_rot, cum_rot)
 
-        # Rotate the placement axes through cumulative fold rotation
-        z_axis_raw = (rot[0][2], rot[1][2], rot[2][2])
-        x_axis_raw = (rot[0][0], rot[1][0], rot[2][0])
-        z_axis = _normalize(_apply_rotation(cum_rot, z_axis_raw))
-        x_axis = _normalize(_apply_rotation(cum_rot, x_axis_raw))
+        # Transform axis directions through fold rotation
+        x_dir_flat = _sub(x_tip_flat, origin_flat)
+        z_dir_flat = _sub(z_tip_flat, origin_flat)
+        x_axis = _normalize(_apply_rotation(cum_rot, x_dir_flat))
+        z_axis = _normalize(_apply_rotation(cum_rot, z_dir_flat))
+        origin = origin_3d
     else:
-        z_axis = _normalize((rot[0][2], rot[1][2], rot[2][2]))
-        x_axis = _normalize((rot[0][0], rot[1][0], rot[2][0]))
+        origin = origin_flat
+        x_axis = _normalize(_sub(x_tip_flat, origin_flat))
+        z_axis = _normalize(_sub(z_tip_flat, origin_flat))
 
     return origin, z_axis, x_axis
 
