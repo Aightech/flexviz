@@ -136,12 +136,12 @@ def board_to_step_ocp(board_geometry, markers, filename, config=None,
             arc_segments=original_segments,
         )
 
-        # Snap region outline vertices onto arc circles.
-        # Fold boundary intersection points land on the arc CHORD, not the
-        # circle — snapping corrects this so three-point arc construction
-        # gets the exact center/radius.
-        for r in regions:
-            r.outline = _snap_outline_to_arcs(r.outline, original_segments)
+        # Note: we do NOT snap outline vertices onto arc circles here.
+        # Snapping moves fold boundary vertices off the fold line, causing
+        # mismatches between flat and bend faces.  Instead, _point_on_arc
+        # uses adaptive tolerance (15% radius) to match chord-displaced
+        # vertices, and the B-spline bend surface handles arcs via grid
+        # sampling.
 
         # --- build unified PCB solid (single shell, no boolean fuse) ------
         pcb_solid = _build_unified_pcb_ocp(
@@ -1650,8 +1650,24 @@ def _build_bend_skin_faces_bspline(region, recipe_defs, thickness,
     al_min, al_max = min(along_vals), max(along_vals)
     pe_min, pe_max = min(perp_vals), max(perp_vals)
 
-    n_along = max(4, int((al_max - al_min) / 0.5) + 1)
-    n_perp = max(4, int((pe_max - pe_min) / 0.3) + 1)
+    # Build grid values: regular spacing PLUS exact outline vertex
+    # positions.  This ensures the B-spline surface passes through the
+    # exact boundary vertices, eliminating gaps with adjacent faces.
+    def _grid_values(vmin, vmax, step, exact_vals):
+        """Sorted unique values: regular spacing merged with exact points."""
+        vals = set()
+        n = max(2, int((vmax - vmin) / step) + 1)
+        for i in range(n):
+            vals.add(round(vmin + (vmax - vmin) * i / (n - 1), 8))
+        for v in exact_vals:
+            if vmin - 1e-6 <= v <= vmax + 1e-6:
+                vals.add(round(v, 8))
+        return sorted(vals)
+
+    al_grid = _grid_values(al_min, al_max, 0.5, along_vals)
+    pe_grid = _grid_values(pe_min, pe_max, 0.3, perp_vals)
+    n_along = len(al_grid)
+    n_perp = len(pe_grid)
     nv = len(region.outline)
 
     # --- Helper: 3D point on top or bottom surface ---
@@ -1771,10 +1787,8 @@ def _build_bend_skin_faces_bspline(region, recipe_defs, thickness,
     # --- Build B-spline surfaces ---
     def _build_surface(bottom=False):
         grid = TColgp_Array2OfPnt(1, n_along, 1, n_perp)
-        for gi in range(n_along):
-            al = al_min + (al_max - al_min) * gi / (n_along - 1)
-            for gj in range(n_perp):
-                pe = pe_min + (pe_max - pe_min) * gj / (n_perp - 1)
+        for gi, al in enumerate(al_grid):
+            for gj, pe in enumerate(pe_grid):
                 x = cx + al * ax_d + pe * px_d
                 y = cy + al * ay_d + pe * py_d
                 pt = transform_point((x, y), recipe_defs)
