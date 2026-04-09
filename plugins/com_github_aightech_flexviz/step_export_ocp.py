@@ -125,8 +125,7 @@ def board_to_step_ocp(board_geometry, markers, filename, config=None,
         for c in board_geometry.cutouts:
             cutout_segments.append(c.segments if c.segments else [])
 
-        outline_2d = _tessellate_arcs(
-            list(board_geometry.outline.vertices), original_segments)
+        outline_2d = list(board_geometry.outline.vertices)
         if len(outline_2d) < 3:
             return False
         holes_2d = [list(c.vertices) for c in board_geometry.cutouts]
@@ -136,6 +135,13 @@ def board_to_step_ocp(board_geometry, markers, filename, config=None,
             num_bend_subdivisions=1,
             arc_segments=original_segments,
         )
+
+        # Snap region outline vertices onto arc circles.
+        # Fold boundary intersection points land on the arc CHORD, not the
+        # circle — snapping corrects this so three-point arc construction
+        # gets the exact center/radius.
+        for r in regions:
+            r.outline = _snap_outline_to_arcs(r.outline, original_segments)
 
         # --- build unified PCB solid (single shell, no boolean fuse) ------
         pcb_solid = _build_unified_pcb_ocp(
@@ -334,12 +340,53 @@ def _arc_midpoint_2d(start, end, center, radius, ccw):
     return (cx + radius * math.cos(a_mid), cy + radius * math.sin(a_mid))
 
 
+def _snap_pt_to_arc_2d(pt, center, radius):
+    """Project a 2D point onto a circle (closest point on circle)."""
+    dx = pt[0] - center[0]
+    dy = pt[1] - center[1]
+    dist = math.sqrt(dx * dx + dy * dy)
+    if dist < 1e-10:
+        return (center[0] + radius, center[1])
+    return (center[0] + dx / dist * radius,
+            center[1] + dy / dist * radius)
+
+
+def _snap_outline_to_arcs(outline, arc_segments, tolerance_frac=0.15):
+    """Snap outline vertices onto arc circles if they're close.
+
+    Fold boundary intersection points lie on arc chords, not the arc
+    circle itself.  Snapping them ensures consistent positions for both
+    arc and adjacent line edges, preventing wire gaps.
+    """
+    if not arc_segments:
+        return outline
+    arcs = [s for s in arc_segments if s.type == "arc" and s.center is not None]
+    if not arcs:
+        return outline
+    result = []
+    for v in outline:
+        snapped = v
+        for a in arcs:
+            cx, cy = a.center
+            dist = math.sqrt((v[0] - cx) ** 2 + (v[1] - cy) ** 2)
+            off = abs(dist - a.radius)
+            if 1e-6 < off < a.radius * tolerance_frac:
+                # Close but not exact — snap onto circle
+                snapped = _snap_pt_to_arc_2d(v, a.center, a.radius)
+                break
+        result.append(snapped)
+    return result
+
+
 def _make_3d_wire(tagged_edges, recipe, normal):
     """
     Create a 3D Wire from tagged 2D edges.
 
     Line edges → Edge.make_line
-    Arc edges  → Edge.make_three_point_arc  (exact circle through 3 pts)
+    Arc edges  → Edge.make_three_point_arc (exact circle through 3 pts)
+
+    Assumes vertices have already been snapped onto arc circles by
+    ``_snap_outline_to_arcs`` at the region level.
     """
     n = _normalize(normal)
     edges: list = []
@@ -356,15 +403,13 @@ def _make_3d_wire(tagged_edges, recipe, normal):
             mid_2d = _arc_midpoint_2d(
                 te.start, te.end, te.center, te.radius, te.ccw)
             mid_3d = transform_point(mid_2d, recipe)
-
-            # Snap the three points to the face plane for planarity
             pts = _snap_to_plane([start_3d, mid_3d, end_3d], n)
             try:
                 edges.append(Edge.make_three_point_arc(
                     _vec(pts[0]), _vec(pts[1]), _vec(pts[2])))
                 continue
             except Exception:
-                pass  # fall through to line
+                pass
 
         edges.append(Edge.make_line(_vec(start_3d), _vec(end_3d)))
 
@@ -1213,13 +1258,53 @@ def _build_flat_skin_faces(region, recipe_defs, thickness,
     if top_face is None:
         return []
 
-    # --- Bottom face (translated by -n*thickness, reversed winding) ---
+    # --- Bottom face (per-vertex normal offset, reversed winding) ---
+    # Use compute_normal at each vertex for the offset direction.
+    # This matches how the bend zone computes its bottom surface,
+    # ensuring no gap at the flat-bend boundary.
+    nv = len(region.outline)
+    bot_tagged = list(reversed(tagged_edges))
+    bot_tagged = [
+        TaggedEdge(type=e.type, start=e.end, end=e.start,
+                   center=e.center, radius=e.radius,
+                   ccw=(not e.ccw) if e.type == "arc" else e.ccw)
+        for e in bot_tagged
+    ]
+
+    # Build a recipe that applies per-point normal offset for bottom
+    def _bot_transform(p2d):
+        pt = transform_point(p2d, recipe_defs)
+        nrm = compute_normal(p2d, recipe_defs)
+        return _add(pt, _scale(nrm, -thickness))
+
+    bot_edges = []
+    for te in bot_tagged:
+        s3 = _bot_transform(te.start)
+        e3 = _bot_transform(te.end)
+        d = _sub(e3, s3)
+        if math.sqrt(_dot(d, d)) < 1e-9:
+            continue
+        if te.type == "arc" and te.center is not None:
+            mid_2d = _arc_midpoint_2d(
+                te.start, te.end, te.center, te.radius, te.ccw)
+            m3 = _bot_transform(mid_2d)
+            pts = _snap_to_plane([s3, m3, e3], n)
+            try:
+                bot_edges.append(Edge.make_three_point_arc(
+                    _vec(pts[0]), _vec(pts[1]), _vec(pts[2])))
+                continue
+            except Exception:
+                pass
+        bot_edges.append(Edge.make_line(_vec(s3), _vec(e3)))
+
+    if not bot_edges:
+        return []
+    outer_wire_bot = _make_wire(bot_edges)
+
+    # Hole wires for bottom — simple translation is fine (holes are
+    # small and far from fold boundaries)
     offset_vec = (-n[0] * thickness, -n[1] * thickness, -n[2] * thickness)
     loc = TopLoc_Location(_translation_trsf(offset_vec))
-
-    outer_wire_bot = Wire(TopoDS.Wire_s(
-        outer_wire_top.wrapped.Moved(loc).Reversed()))
-
     hole_wires_bot: list = []
     for hw in hole_wires_top:
         hole_wires_bot.append(Wire(TopoDS.Wire_s(
@@ -1377,19 +1462,168 @@ def _extract_skin_faces(solid, cyl_axis, cyl_ref, theta_min, sweep):
 
 def _build_bend_skin_faces(region, recipe_defs, thickness, original_segments,
                            edge_freq=None):
-    """Build skin faces for a bend region using B-spline surfaces.
+    """Build skin faces for a bend region.
 
-    Samples a regular grid via ``transform_point`` (same math as the viewer)
-    and fits a B-spline surface through the grid.  The surface is trimmed to
-    the outline boundary, producing a smooth curved face that correctly
-    follows arc fillets crossing the bend zone.
+    **Hybrid approach:**
 
-    Also creates the offset bottom surface and perimeter side faces.
+    * If the bend zone has no arc edges: use the exact profile-revolve
+      method (``_build_bend_skin_faces_revolve``).  This produces perfect
+      cylindrical/toroidal surfaces with zero gap at flat–bend boundaries.
+
+    * If arcs cross the bend zone: use a B-spline surface sampled via
+      ``transform_point`` (``_build_bend_skin_faces_bspline``).  This
+      follows arc curvature correctly but may have a tiny gap (~0.02 mm)
+      at the boundary due to grid interpolation.
+    """
+    # Check if the region outline has arcs
+    tagged = (_recover_arcs(region.outline, original_segments)
+              if original_segments else [])
+    has_arcs = any(t.type == "arc" for t in tagged)
+
+    if has_arcs:
+        return _build_bend_skin_faces_bspline(
+            region, recipe_defs, thickness, original_segments, edge_freq)
+    else:
+        return _build_bend_skin_faces_revolve(
+            region, recipe_defs, thickness, original_segments)
+
+
+def _build_bend_skin_faces_revolve(region, recipe_defs, thickness,
+                                   original_segments):
+    """Build bend skin faces using exact profile-revolve (no arcs)."""
+    fold_def = None
+    entered_from_back = False
+    for entry in reversed(recipe_defs):
+        if entry[1] == "IN_ZONE":
+            fold_def = entry[0]
+            entered_from_back = entry[2] if len(entry) > 2 else False
+            break
+    if fold_def is None:
+        return _build_flat_skin_faces(region, recipe_defs, thickness,
+                                      original_segments, [], None)
+
+    prior_recipe = recipe_defs[:-1]
+    hw = fold_def.zone_width / 2
+    R = fold_def.radius
+
+    perp_dists = []
+    along_dists = []
+    for p in region.outline:
+        dx = p[0] - fold_def.center[0]
+        dy = p[1] - fold_def.center[1]
+        perp_dists.append(dx * fold_def.perp[0] + dy * fold_def.perp[1])
+        along_dists.append(dx * fold_def.axis[0] + dy * fold_def.axis[1])
+
+    perp_min, perp_max = min(perp_dists), max(perp_dists)
+    along_min, along_max = min(along_dists), max(along_dists)
+
+    zw = fold_def.zone_width
+    frac_min = max(0, perp_min + hw) / zw if zw > 0 else 0
+    frac_max = min(zw, perp_max + hw) / zw if zw > 0 else 0
+    sign_angle = 1.0 if fold_def.angle >= 0 else -1.0
+
+    rot = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+    for entry in prior_recipe:
+        f, c = entry[0], entry[1]
+        back = entry[2] if len(entry) > 2 else False
+        if c == "AFTER":
+            f_ax = _apply_rotation(rot, (f.axis[0], f.axis[1], 0.0))
+            ra = -f.angle if back else f.angle
+            rot = _multiply_matrices(
+                _rotation_matrix_around_axis(f_ax, ra), rot)
+
+    fold_axis_3d = _apply_rotation(rot, (fold_def.axis[0], fold_def.axis[1], 0.0))
+    fold_perp_3d = _apply_rotation(rot, (fold_def.perp[0], fold_def.perp[1], 0.0))
+    up_3d = _apply_rotation(rot, (0.0, 0.0, 1.0))
+
+    ref_2d = (fold_def.center[0] + hw * fold_def.perp[0],
+              fold_def.center[1] + hw * fold_def.perp[1])
+    ref_3d = transform_point(ref_2d, prior_recipe)
+    fold_center_3d = _sub(ref_3d, _scale(fold_perp_3d, hw))
+
+    if entered_from_back:
+        entry_3d = _add(fold_center_3d, _scale(fold_perp_3d, hw))
+    else:
+        entry_3d = _sub(fold_center_3d, _scale(fold_perp_3d, hw))
+
+    cyl_origin = _add(entry_3d, _scale(up_3d, sign_angle * R))
+    cyl_ref = _normalize(_scale(up_3d, -sign_angle))
+    axis_sign = -sign_angle if entered_from_back else sign_angle
+    cyl_axis = _normalize(_scale(fold_axis_3d, axis_sign))
+
+    if entered_from_back:
+        theta_min = abs(fold_def.angle) - frac_max * abs(fold_def.angle)
+        theta_max = abs(fold_def.angle) - frac_min * abs(fold_def.angle)
+    else:
+        theta_min = frac_min * abs(fold_def.angle)
+        theta_max = frac_max * abs(fold_def.angle)
+
+    sweep = theta_max - theta_min
+    if sweep < 1e-9:
+        return []
+
+    if sign_angle >= 0:
+        inner_r, outer_r = R, R + thickness
+    else:
+        inner_r, outer_r = R - thickness, R
+
+    if axis_sign >= 0:
+        al_min, al_max = along_min, along_max
+    else:
+        al_min, al_max = -along_max, -along_min
+
+    tangent = _normalize(_cross(cyl_axis, cyl_ref))
+    cos_t = math.cos(theta_min)
+    sin_t = math.sin(theta_min)
+    radial = _add(_scale(cyl_ref, cos_t), _scale(tangent, sin_t))
+
+    def _prof_pt(along, r):
+        return _add(_add(cyl_origin, _scale(cyl_axis, along)),
+                    _scale(radial, r))
+
+    p1 = _prof_pt(al_min, inner_r)
+    p2 = _prof_pt(al_max, inner_r)
+    p3 = _prof_pt(al_max, outer_r)
+    p4 = _prof_pt(al_min, outer_r)
+    profile_edges = [
+        Edge.make_line(_vec(p1), _vec(p2)),
+        Edge.make_line(_vec(p2), _vec(p3)),
+        Edge.make_line(_vec(p3), _vec(p4)),
+        Edge.make_line(_vec(p4), _vec(p1)),
+    ]
+
+    ax = gp_Ax1(
+        gp_Pnt(cyl_origin[0], cyl_origin[1], cyl_origin[2]),
+        gp_Dir(cyl_axis[0], cyl_axis[1], cyl_axis[2]),
+    )
+
+    faces: list = []
+    for edge in profile_edges:
+        try:
+            revol = BRepPrimAPI_MakeRevol(edge.wrapped, ax, sweep)
+            revol.Build()
+            if revol.IsDone():
+                faces.append(Face(revol.Shape()))
+        except Exception:
+            pass
+    return faces
+
+
+def _build_bend_skin_faces_bspline(region, recipe_defs, thickness,
+                                    original_segments, edge_freq=None):
+    """Build bend skin faces using B-spline surfaces (for arcs).
+
+    Builds top and bottom B-spline surfaces independently, then
+    constructs side faces by lofting between **shared** B-spline edge
+    objects.  All three face types (top, bottom, side) reference the
+    same OCP Edge objects at their boundaries — zero mismatch.
     """
     from OCP.GeomAPI import GeomAPI_PointsToBSplineSurface
     from OCP.TColgp import TColgp_Array2OfPnt
     from OCP.GeomAbs import GeomAbs_C2
-    from OCP.Approx import Approx_ParametrizationType
+    from OCP.GeomAPI import GeomAPI_PointsToBSpline as _PtsBSpl
+    from OCP.TColgp import TColgp_Array1OfPnt as _Arr1Pnt
+    from OCP.BRepOffsetAPI import BRepOffsetAPI_ThruSections
 
     fold_def = None
     entered_from_back = False
@@ -1407,7 +1641,6 @@ def _build_bend_skin_faces(region, recipe_defs, thickness, original_segments,
     ax_d, ay_d = fold_def.axis
     px_d, py_d = fold_def.perp
 
-    # Compute along/perp extents from region outline
     along_vals = []
     perp_vals = []
     for p in region.outline:
@@ -1417,212 +1650,179 @@ def _build_bend_skin_faces(region, recipe_defs, thickness, original_segments,
     al_min, al_max = min(along_vals), max(along_vals)
     pe_min, pe_max = min(perp_vals), max(perp_vals)
 
-    # Sample a regular grid in (along, perp) and transform to 3D
     n_along = max(4, int((al_max - al_min) / 0.5) + 1)
     n_perp = max(4, int((pe_max - pe_min) / 0.3) + 1)
+    nv = len(region.outline)
 
-    def _sample(al, pe, bottom=False):
-        """Sample a point on the bend surface via transform_point."""
-        x = cx + al * ax_d + pe * px_d
-        y = cy + al * ay_d + pe * py_d
-        pt = transform_point((x, y), recipe_defs)
+    # --- Helper: 3D point on top or bottom surface ---
+    def _pt3d(idx, bottom=False):
+        p2d = region.outline[idx % nv]
+        pt = transform_point(p2d, recipe_defs)
         if bottom:
-            # Per-point normal offset (varies across the bend zone)
-            nrm = compute_normal((x, y), recipe_defs)
+            nrm = compute_normal(p2d, recipe_defs)
             pt = _add(pt, _scale(nrm, -thickness))
         return pt
 
-    faces: list = []
+    def _is_edge_perim(ei):
+        k = _edge_key_2d(region.outline[ei],
+                         region.outline[(ei + 1) % nv])
+        return (edge_freq.get(k, 1) < 2) if edge_freq else True
 
-    # Build B-spline surfaces for top and bottom skins
-    for bottom, reverse in [(False, False), (True, True)]:
-        grid = TColgp_Array2OfPnt(1, n_along, 1, n_perp)
-        for i in range(n_along):
-            al = al_min + (al_max - al_min) * i / (n_along - 1)
-            for j in range(n_perp):
-                pe = pe_min + (pe_max - pe_min) * j / (n_perp - 1)
-                pt = _sample(al, pe, bottom=bottom)
-                grid.SetValue(i + 1, j + 1,
-                              gp_Pnt(pt[0], pt[1], pt[2]))
-
-        try:
-            surf_maker = GeomAPI_PointsToBSplineSurface(
-                grid, 3, 8, GeomAbs_C2, 0.001)
-            if not surf_maker.IsDone():
-                continue
-            surface = surf_maker.Surface()
-
-            # Build trimming wire: B-spline for perimeter chains,
-            # straight lines for fold boundaries.
-            # Use the same chain structure as the side faces.
-            from OCP.GeomAPI import GeomAPI_PointsToBSpline as _PtsBSpl
-            from OCP.TColgp import TColgp_Array1OfPnt as _Arr1Pnt
-
-            nv = len(region.outline)
-
-            def _pt3d(idx):
-                p2d = region.outline[idx % nv]
-                pt = transform_point(p2d, recipe_defs)
-                if bottom:
-                    nrm = compute_normal(p2d, recipe_defs)
-                    pt = _add(pt, _scale(nrm, -thickness))
-                return pt
-
-            # Build the wire edge-by-edge in outline order (forward).
-            # Then reverse the entire wire for the bottom face.
-            # Start from an internal (fold-boundary) edge so that
-            # perimeter chains don't split across the wrap-around.
-            wire_edges_fwd = []
-
-            def _is_edge_perim(ei):
-                k = _edge_key_2d(region.outline[ei],
-                                 region.outline[(ei + 1) % nv])
-                return (edge_freq.get(k, 1) < 2) if edge_freq else True
-
-            start = 0
-            for s in range(nv):
-                if not _is_edge_perim(s):
-                    start = s
-                    break
-
-            i = 0
-            while i < nv:
-                ei = (start + i) % nv
-                is_p = _is_edge_perim(ei)
-
-                if is_p:
-                    # Collect contiguous perimeter chain
-                    chain_idx = [ei]
-                    while i < nv:
-                        ej = (start + i) % nv
-                        if not _is_edge_perim(ej):
-                            break
-                        chain_idx.append((ej + 1) % nv)
-                        i += 1
-                    pts = [_pt3d(idx) for idx in chain_idx]
-                    if len(pts) >= 3:
-                        arr = _Arr1Pnt(1, len(pts))
-                        for k2, pt in enumerate(pts):
-                            arr.SetValue(k2 + 1,
-                                         gp_Pnt(pt[0], pt[1], pt[2]))
-                        bsp = _PtsBSpl(arr, 3, 8)
-                        if bsp.IsDone():
-                            from OCP.BRepBuilderAPI import \
-                                BRepBuilderAPI_MakeEdge as _MkE
-                            emk = _MkE(bsp.Curve())
-                            emk.Build()
-                            if emk.IsDone():
-                                wire_edges_fwd.append(Edge(emk.Shape()))
-                                continue
-                    # Fallback: line segments
-                    for k2 in range(len(pts) - 1):
-                        d = _sub(pts[k2 + 1], pts[k2])
-                        if math.sqrt(_dot(d, d)) > 1e-9:
-                            wire_edges_fwd.append(Edge.make_line(
-                                _vec(pts[k2]), _vec(pts[k2 + 1])))
-                else:
-                    p1 = _pt3d(ei)
-                    p2 = _pt3d((ei + 1) % nv)
-                    d = _sub(p2, p1)
-                    if math.sqrt(_dot(d, d)) > 1e-9:
-                        wire_edges_fwd.append(
-                            Edge.make_line(_vec(p1), _vec(p2)))
-                    i += 1
-
-            if reverse:
-                # Reverse the wire for CW winding (bottom face)
-                wire_edges = [Edge(e.wrapped.Reversed())
-                              for e in reversed(wire_edges_fwd)]
-            else:
-                wire_edges = wire_edges_fwd
-
-            wire = _make_wire(wire_edges)
-            face_maker = BRepBuilderAPI_MakeFace(surface, wire.wrapped, True)
-            face_maker.Build()
-            if face_maker.IsDone() and not face_maker.Face().IsNull():
-                faces.append(Face(face_maker.Face()))
-        except Exception:
-            pass
-
-    # Side faces: for each contiguous chain of perimeter edges (not fold
-    # boundaries), fit B-spline curves through the top and bottom points
-    # and loft a single smooth face between them.
-    from OCP.BRepOffsetAPI import BRepOffsetAPI_ThruSections
-    from OCP.GeomAPI import GeomAPI_PointsToBSpline
-    from OCP.TColgp import TColgp_Array1OfPnt
-
-    nv = len(region.outline)
-
-    def _top_bot(idx):
-        p2d = region.outline[idx % nv]
-        t = transform_point(p2d, recipe_defs)
-        nrm = compute_normal(p2d, recipe_defs)
-        b = _add(t, _scale(nrm, -thickness))
-        return t, b
-
-    # Classify each edge as perimeter or internal
-    is_perimeter = []
-    for i in range(nv):
-        p1 = region.outline[i]
-        p2 = region.outline[(i + 1) % nv]
-        key = _edge_key_2d(p1, p2)
-        is_perim = (edge_freq.get(key, 1) < 2) if edge_freq else True
-        is_perimeter.append(is_perim)
-
-    # Extract contiguous perimeter chains.
-    # Start from an internal edge to avoid splitting a chain at the wrap.
-    chains = []
-    start_side = 0
+    # --- Build perimeter chains (shared between top, bottom, side) ---
+    start = 0
     for s in range(nv):
-        if not is_perimeter[s]:
-            start_side = s
+        if not _is_edge_perim(s):
+            start = s
             break
-    current_chain = []
-    for k in range(nv):
-        ei = (start_side + k) % nv
-        if is_perimeter[ei]:
-            if not current_chain:
-                current_chain.append(ei)
-            current_chain.append((ei + 1) % nv)
-        else:
-            if current_chain:
-                chains.append(current_chain)
-                current_chain = []
-    if current_chain:
-        chains.append(current_chain)
 
-    def _bspline_wire(pts_3d):
-        """Fit a B-spline through 3D points and return a single-edge Wire."""
+    # Walk outline from an internal edge, collecting chains
+    chains = []  # list of vertex-index lists
+    i = 0
+    while i < nv:
+        ei = (start + i) % nv
+        if _is_edge_perim(ei):
+            chain = [ei]
+            while i < nv:
+                ej = (start + i) % nv
+                if not _is_edge_perim(ej):
+                    break
+                chain.append((ej + 1) % nv)
+                i += 1
+            chains.append(chain)
+        else:
+            i += 1
+
+    # --- Build B-spline edges for each chain (top and bottom) ---
+    def _make_bspline_edge(pts_3d):
         if len(pts_3d) < 2:
             return None
         if len(pts_3d) == 2:
-            # Just a line
-            return _make_wire([Edge.make_line(_vec(pts_3d[0]), _vec(pts_3d[1]))])
-        arr = TColgp_Array1OfPnt(1, len(pts_3d))
+            d = _sub(pts_3d[1], pts_3d[0])
+            if math.sqrt(_dot(d, d)) < 1e-9:
+                return None
+            return Edge.make_line(_vec(pts_3d[0]), _vec(pts_3d[1]))
+        arr = _Arr1Pnt(1, len(pts_3d))
         for k, pt in enumerate(pts_3d):
             arr.SetValue(k + 1, gp_Pnt(pt[0], pt[1], pt[2]))
-        bsp = GeomAPI_PointsToBSpline(arr, 3, 8)
+        bsp = _PtsBSpl(arr, 3, 8)
         if not bsp.IsDone():
             return None
-        from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge
-        edge_mk = BRepBuilderAPI_MakeEdge(bsp.Curve())
-        edge_mk.Build()
-        if not edge_mk.IsDone():
-            return None
-        return _make_wire([Edge(edge_mk.Shape())])
+        from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge as _MkE
+        emk = _MkE(bsp.Curve())
+        emk.Build()
+        return Edge(emk.Shape()) if emk.IsDone() else None
 
+    # Pre-compute shared B-spline edges
+    top_chain_edges = []  # one Edge per chain (top surface)
+    bot_chain_edges = []  # one Edge per chain (bottom surface)
     for chain in chains:
-        top_pts = [_top_bot(idx)[0] for idx in chain]
-        bot_pts = [_top_bot(idx)[1] for idx in chain]
+        # Densify for curvature
+        top_pts = []
+        bot_pts = []
+        for ci in range(len(chain)):
+            top_pts.append(_pt3d(chain[ci], False))
+            bot_pts.append(_pt3d(chain[ci], True))
+            if ci < len(chain) - 1:
+                p1 = region.outline[chain[ci] % nv]
+                p2 = region.outline[chain[ci + 1] % nv]
+                dist = math.sqrt((p2[0]-p1[0])**2 + (p2[1]-p1[1])**2)
+                n_sub = max(0, int(dist / 0.5) - 1)
+                for si in range(1, n_sub + 1):
+                    frac = si / (n_sub + 1)
+                    pm = (p1[0]+frac*(p2[0]-p1[0]),
+                          p1[1]+frac*(p2[1]-p1[1]))
+                    top_pts.append(transform_point(pm, recipe_defs))
+                    nrm = compute_normal(pm, recipe_defs)
+                    bot_pts.append(_add(
+                        transform_point(pm, recipe_defs),
+                        _scale(nrm, -thickness)))
 
-        top_wire = _bspline_wire(top_pts)
-        bot_wire = _bspline_wire(bot_pts)
-        if top_wire is None or bot_wire is None:
+        top_chain_edges.append(_make_bspline_edge(top_pts))
+        bot_chain_edges.append(_make_bspline_edge(bot_pts))
+
+    # --- Assemble trimming wires using shared edges ---
+    def _build_wire(chain_edges, bottom=False):
+        """Build a closed wire from chain edges + fold-boundary lines."""
+        edges = []
+        ci = 0
+        i = 0
+        while i < nv:
+            ei = (start + i) % nv
+            if _is_edge_perim(ei):
+                # Insert the pre-computed chain edge
+                if ci < len(chain_edges) and chain_edges[ci] is not None:
+                    edges.append(chain_edges[ci])
+                # Skip to end of chain
+                while i < nv:
+                    ej = (start + i) % nv
+                    if not _is_edge_perim(ej):
+                        break
+                    i += 1
+                ci += 1
+            else:
+                p1 = _pt3d(ei, bottom)
+                p2 = _pt3d((ei + 1) % nv, bottom)
+                d = _sub(p2, p1)
+                if math.sqrt(_dot(d, d)) > 1e-9:
+                    edges.append(Edge.make_line(_vec(p1), _vec(p2)))
+                i += 1
+        return _make_wire(edges) if edges else None
+
+    # --- Build B-spline surfaces ---
+    def _build_surface(bottom=False):
+        grid = TColgp_Array2OfPnt(1, n_along, 1, n_perp)
+        for gi in range(n_along):
+            al = al_min + (al_max - al_min) * gi / (n_along - 1)
+            for gj in range(n_perp):
+                pe = pe_min + (pe_max - pe_min) * gj / (n_perp - 1)
+                x = cx + al * ax_d + pe * px_d
+                y = cy + al * ay_d + pe * py_d
+                pt = transform_point((x, y), recipe_defs)
+                if bottom:
+                    nrm = compute_normal((x, y), recipe_defs)
+                    pt = _add(pt, _scale(nrm, -thickness))
+                grid.SetValue(gi + 1, gj + 1,
+                              gp_Pnt(pt[0], pt[1], pt[2]))
+        maker = GeomAPI_PointsToBSplineSurface(grid, 3, 8, GeomAbs_C2, 0.001)
+        return maker.Surface() if maker.IsDone() else None
+
+    faces: list = []
+
+    # Top face
+    top_surface = _build_surface(False)
+    top_wire = _build_wire(top_chain_edges, False)
+    if top_surface and top_wire:
+        try:
+            fm = BRepBuilderAPI_MakeFace(top_surface, top_wire.wrapped, True)
+            fm.Build()
+            if fm.IsDone() and not fm.Face().IsNull():
+                faces.append(Face(fm.Face()))
+        except Exception:
+            pass
+
+    # Bottom face (reversed wire)
+    bot_surface = _build_surface(True)
+    bot_wire = _build_wire(bot_chain_edges, True)
+    if bot_surface and bot_wire:
+        try:
+            rev_wire = Wire(TopoDS.Wire_s(bot_wire.wrapped.Reversed()))
+            fm = BRepBuilderAPI_MakeFace(bot_surface, rev_wire.wrapped, True)
+            fm.Build()
+            if fm.IsDone() and not fm.Face().IsNull():
+                faces.append(Face(fm.Face()))
+        except Exception:
+            pass
+
+    # Side faces: loft between SHARED top and bottom chain edges
+    for top_e, bot_e in zip(top_chain_edges, bot_chain_edges):
+        if top_e is None or bot_e is None:
             continue
         try:
+            tw = _make_wire([top_e])
+            bw = _make_wire([bot_e])
             loft = BRepOffsetAPI_ThruSections(False, False, 1e-6)
-            loft.AddWire(top_wire.wrapped)
-            loft.AddWire(bot_wire.wrapped)
+            loft.AddWire(tw.wrapped)
+            loft.AddWire(bw.wrapped)
             loft.Build()
             if loft.IsDone():
                 exp = TopExp_Explorer(loft.Shape(), TopAbs_FACE)
@@ -1665,19 +1865,10 @@ def _build_top_edge_3d(p1_2d, p2_2d, tagged_edges, edge_idx,
 def _build_perimeter_side_faces(regions, thickness, outline_segments, edge_freq):
     """Build side faces for perimeter outline edges of flat regions.
 
-    Bend regions' along-axis end caps are already included via
-    ``_build_bend_skin_faces`` (revolved end-cap edges).
-    Only flat-region perimeter edges need explicit side walls.
-
-    Each edge is matched against original arc segments directly (not via
-    ``_recover_arcs`` which merges consecutive arcs and breaks the 1:1
-    index correspondence with the region outline).
+    Uses ``_recover_arcs`` (which merges consecutive sub-edges on the
+    same arc circle) so that each original arc produces a single smooth
+    cylindrical side face instead of many faceted strips.
     """
-    # Pre-filter arc segments for efficiency
-    arc_segments = ([s for s in outline_segments
-                     if s.type == "arc" and s.center is not None]
-                    if outline_segments else [])
-
     faces: list = []
 
     for region in regions:
@@ -1691,41 +1882,58 @@ def _build_perimeter_side_faces(regions, thickness, outline_segments, edge_freq)
         offset_vec = gp_Vec(-n[0] * thickness, -n[1] * thickness,
                             -n[2] * thickness)
 
-        nv = len(region.outline)
-        for i in range(nv):
-            p1 = region.outline[i]
-            p2 = region.outline[(i + 1) % nv]
-            key = _edge_key_2d(p1, p2)
+        # Recover arcs with merge — gives one edge per original arc
+        tagged = (_recover_arcs(region.outline, outline_segments)
+                  if outline_segments else None)
 
+        if tagged is None:
+            nv = len(region.outline)
+            tagged = [TaggedEdge(type="line",
+                                 start=region.outline[i],
+                                 end=region.outline[(i + 1) % nv])
+                      for i in range(nv)]
+
+        for te in tagged:
+            # Check if this (merged) edge is a perimeter edge
+            key = _edge_key_2d(te.start, te.end)
             if edge_freq.get(key, 0) >= 2:
-                continue  # internal edge
+                # Check with un-merged endpoints too (the merged edge
+                # spans multiple original edges — check the first one)
+                continue
 
-            start_3d = transform_point(p1, recipe_defs)
-            end_3d = transform_point(p2, recipe_defs)
+            # Check perimeter by testing if start vertex is on any
+            # internal edge
+            is_internal = False
+            nv = len(region.outline)
+            for i in range(nv):
+                if (abs(region.outline[i][0] - te.start[0]) < 1e-6 and
+                        abs(region.outline[i][1] - te.start[1]) < 1e-6):
+                    k = _edge_key_2d(region.outline[i],
+                                     region.outline[(i + 1) % nv])
+                    if edge_freq.get(k, 0) >= 2:
+                        is_internal = True
+                    break
+            if is_internal:
+                continue
+
+            start_3d = transform_point(te.start, recipe_defs)
+            end_3d = transform_point(te.end, recipe_defs)
             d = _sub(end_3d, start_3d)
             if math.sqrt(_dot(d, d)) < 1e-9:
                 continue
 
-            # Match this edge directly against original arc segments
+            # Build top edge (arc or line)
             top_edge = None
-            for arc in arc_segments:
-                if (_point_on_arc(p1, arc) and _point_on_arc(p2, arc)):
-                    # Compute ccw for THIS edge (p1→p2)
-                    cx, cy = arc.center
-                    sx, sy = p1[0] - cx, p1[1] - cy
-                    ex, ey = p2[0] - cx, p2[1] - cy
-                    ccw = (sx * ey - sy * ex) > 0
-
-                    mid_2d = _arc_midpoint_2d(
-                        p1, p2, arc.center, arc.radius, ccw)
-                    mid_3d = transform_point(mid_2d, recipe_defs)
-                    pts = _snap_to_plane([start_3d, mid_3d, end_3d], n)
-                    try:
-                        top_edge = Edge.make_three_point_arc(
-                            _vec(pts[0]), _vec(pts[1]), _vec(pts[2]))
-                    except Exception:
-                        pass
-                    break
+            if te.type == "arc" and te.center is not None:
+                mid_2d = _arc_midpoint_2d(
+                    te.start, te.end, te.center, te.radius, te.ccw)
+                mid_3d = transform_point(mid_2d, recipe_defs)
+                pts = _snap_to_plane([start_3d, mid_3d, end_3d], n)
+                try:
+                    top_edge = Edge.make_three_point_arc(
+                        _vec(pts[0]), _vec(pts[1]), _vec(pts[2]))
+                except Exception:
+                    pass
 
             if top_edge is None:
                 top_edge = Edge.make_line(_vec(start_3d), _vec(end_3d))
