@@ -1728,11 +1728,16 @@ def _build_bend_skin_faces_bspline(region, recipe_defs, thickness,
         emk.Build()
         return Edge(emk.Shape()) if emk.IsDone() else None
 
-    # Pre-compute shared B-spline edges
-    top_chain_edges = []  # one Edge per chain (top surface)
-    bot_chain_edges = []  # one Edge per chain (bottom surface)
+    # Pre-compute shared B-spline edges.
+    # For edges on arcs, intermediate points are sampled along the arc
+    # circle (not the chord) so the 3D curve follows the true folded path.
+    arc_segs = [s for s in original_segments
+                if s.type == "arc" and s.center is not None
+                ] if original_segments else []
+
+    top_chain_edges = []
+    bot_chain_edges = []
     for chain in chains:
-        # Densify for curvature
         top_pts = []
         bot_pts = []
         for ci in range(len(chain)):
@@ -1742,11 +1747,42 @@ def _build_bend_skin_faces_bspline(region, recipe_defs, thickness,
                 p1 = region.outline[chain[ci] % nv]
                 p2 = region.outline[chain[ci + 1] % nv]
                 dist = math.sqrt((p2[0]-p1[0])**2 + (p2[1]-p1[1])**2)
-                n_sub = max(0, int(dist / 0.5) - 1)
+                n_sub = max(0, int(dist / 0.3) - 1)
+
+                # Check if this edge is on an arc
+                matched_arc = None
+                for arc in arc_segs:
+                    if (_point_on_arc(p1, arc) and
+                            _point_on_arc(p2, arc)):
+                        matched_arc = arc
+                        break
+
                 for si in range(1, n_sub + 1):
                     frac = si / (n_sub + 1)
-                    pm = (p1[0]+frac*(p2[0]-p1[0]),
-                          p1[1]+frac*(p2[1]-p1[1]))
+                    if matched_arc is not None:
+                        # Interpolate along the arc circle
+                        acx, acy = matched_arc.center
+                        a1 = math.atan2(p1[1]-acy, p1[0]-acx)
+                        a2 = math.atan2(p2[1]-acy, p2[0]-acx)
+                        sx, sy = p1[0]-acx, p1[1]-acy
+                        ex, ey = p2[0]-acx, p2[1]-acy
+                        ccw = (sx*ey - sy*ex) > 0
+                        if ccw:
+                            sweep = a2 - a1
+                            if sweep <= 0:
+                                sweep += 2*math.pi
+                        else:
+                            sweep = a2 - a1
+                            if sweep >= 0:
+                                sweep -= 2*math.pi
+                        angle = a1 + sweep * frac
+                        pm = (acx + matched_arc.radius * math.cos(angle),
+                              acy + matched_arc.radius * math.sin(angle))
+                    else:
+                        # Linear interpolation (chord)
+                        pm = (p1[0]+frac*(p2[0]-p1[0]),
+                              p1[1]+frac*(p2[1]-p1[1]))
+
                     top_pts.append(transform_point(pm, recipe_defs))
                     nrm = compute_normal(pm, recipe_defs)
                     bot_pts.append(_add(
