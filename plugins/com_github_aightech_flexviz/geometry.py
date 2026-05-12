@@ -713,6 +713,7 @@ def arc_crosses_fold_zone(
 def _refine_arc_segment(
     seg: OutlineSegment,
     max_seg_length: float = 0.25,
+    max_sagitta: float = 0.0,
 ) -> list[tuple[float, float]]:
     """
     Re-linearize an arc OutlineSegment at a finer resolution.
@@ -723,7 +724,11 @@ def _refine_arc_segment(
 
     Args:
         seg: An OutlineSegment with type "arc", center, radius, and mid set.
-        max_seg_length: Maximum chord length between consecutive points.
+        max_seg_length: Maximum chord length between consecutive points
+            (used when max_sagitta is 0).
+        max_sagitta: When > 0, choose subdivision so each chord deflects from
+            the true arc by at most this many mm. Takes precedence over
+            max_seg_length.
 
     Returns:
         List of (x, y) tuples along the arc.
@@ -768,8 +773,13 @@ def _refine_arc_segment(
         sweep = 2 * math.pi - ccw_to_end
         direction = -1
 
-    arc_length = r * sweep
-    n_segments = max(4, int(math.ceil(arc_length / max_seg_length)))
+    if max_sagitta > 0 and r > 0 and max_sagitta < r:
+        # Adaptive: angle per chord such that sagitta ≤ max_sagitta.
+        theta_per_seg = 2.0 * math.acos(1.0 - max_sagitta / r)
+        n_segments = max(4, int(math.ceil(sweep / theta_per_seg)))
+    else:
+        arc_length = r * sweep
+        n_segments = max(4, int(math.ceil(arc_length / max_seg_length)))
 
     points = []
     for i in range(n_segments + 1):
@@ -784,36 +794,39 @@ def refine_outline_for_folds(
     outline: Polygon,
     fold_markers: list,
     fine_max_seg_length: float = 0.25,
+    base_sagitta: float = 0.05,
 ) -> Polygon:
     """
-    Re-linearize arc segments that cross fold zones with finer subdivision.
+    Re-linearize arc segments at appropriate resolution for rendering.
 
-    For each arc segment in *outline.segments* that crosses any fold zone,
-    the arc is re-sampled with a much smaller chord length (default 0.25 mm
-    instead of the standard ~2 mm).  Line segments and arcs that do not
-    cross any fold zone are left unchanged.
+    Each arc segment is tessellated:
+    - At ``fine_max_seg_length`` chord (default 0.25 mm) if it crosses any
+      fold zone — the bend needs many subdivisions for smooth deformation.
+    - At ``base_sagitta`` adaptive sagitta (default 0.05 mm) otherwise —
+      enough density for smooth rendering at any radius without bloating
+      the vertex count.
 
-    The *segments* list on the returned Polygon is preserved (same
-    OutlineSegment objects) so that callers can call this function again
-    if markers change.
+    Without re-tessellating non-crossing arcs we would lose the dense
+    samples produced by the parser (since this function rebuilds the
+    vertex list from .segments).
 
     Args:
         outline: Board outline Polygon with .segments populated.
         fold_markers: List of FoldMarker objects (need .center, .axis,
             .zone_width attributes).
-        fine_max_seg_length: Chord length for refined arcs (mm).
+        fine_max_seg_length: Chord length for arcs crossing fold zones (mm).
+        base_sagitta: Target sagitta for arcs not crossing folds (mm).
 
     Returns:
-        A new Polygon with additional vertices where arcs cross fold zones.
-        If no arcs cross any fold zone the original Polygon is returned
-        unchanged.
+        A new Polygon with arc segments tessellated. If there are no arcs
+        the original Polygon is returned unchanged.
     """
-    if not fold_markers or not outline.segments:
+    if not outline.segments:
         return outline
 
     fold_zones = [
         (m.center, m.axis, m.zone_width) for m in fold_markers
-    ]
+    ] if fold_markers else []
 
     new_vertices = []
     changed = False
@@ -826,13 +839,15 @@ def refine_outline_for_folds(
             )
             if crosses:
                 arc_pts = _refine_arc_segment(seg, max_seg_length=fine_max_seg_length)
-                # Add all points except the last (will be the start of the next segment)
-                new_vertices.extend(arc_pts[:-1])
-                changed = True
-                continue
+            else:
+                arc_pts = _refine_arc_segment(seg, max_sagitta=base_sagitta)
+            # Add all points except the last (will be the start of the next segment)
+            new_vertices.extend(arc_pts[:-1])
+            changed = True
+            continue
 
-        # For line segments or arcs that don't cross fold zones,
-        # just add the start vertex (end is the start of the next segment).
+        # Line segments contribute only their start vertex (end is the
+        # start of the next segment).
         new_vertices.append(seg.start)
 
     if not changed:

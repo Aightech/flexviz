@@ -209,11 +209,18 @@ class TestRefineArcSegment:
 class TestRefineOutlineForFolds:
     """Test the top-level outline refinement function."""
 
-    def test_no_markers_returns_same(self):
-        """When fold_markers is empty, the original polygon is returned."""
+    def test_no_markers_still_tessellates_arcs(self):
+        """With no fold markers, arcs are still re-tessellated at base sagitta
+        so the rendered polygon shows smooth curvature instead of chord
+        approximations. The vertex count grows when the input was coarse."""
         outline = _make_rounded_rect_outline(0, 0, 100, 50, 5)
+        original_count = len(outline.vertices)
         result = refine_outline_for_folds(outline, [])
-        assert result is outline
+        # Helper produced coarse 2 mm-chord arcs; base-sagitta (0.05 mm) is
+        # much denser, so we expect more vertices, and the segments list is
+        # preserved.
+        assert len(result.vertices) > original_count
+        assert result.segments is outline.segments
 
     def test_no_segments_returns_same(self):
         """Outline with no segment info is returned as-is."""
@@ -248,16 +255,25 @@ class TestRefineOutlineForFolds:
 
         assert len(refined.vertices) > original_count
 
-    def test_arc_far_from_fold_unchanged(self):
-        """Rounded rect with fold far from all fillets -> same vertex count."""
+    def test_arc_far_from_fold_uses_base_sagitta(self):
+        """Non-crossing arcs are still tessellated, just at the looser base
+        sagitta (denser than the helper's coarse 2 mm chord, less dense than
+        the fold-crossing case)."""
         outline = _make_rounded_rect_outline(0, 0, 100, 50, 5)
         original_count = len(outline.vertices)
 
         # Fold at x=50 — well away from all corner fillets
         marker = _make_fold_marker(center=(50, 25), axis=(0, 1), zone_width=4)
-        refined = refine_outline_for_folds(outline, [marker])
+        refined_far = refine_outline_for_folds(outline, [marker])
 
-        assert len(refined.vertices) == original_count
+        # And a fold that does cross fillets, for comparison
+        marker_near = _make_fold_marker(center=(5, 25), axis=(0, 1), zone_width=6)
+        refined_near = refine_outline_for_folds(outline, [marker_near])
+
+        # Non-crossing case: more vertices than the coarse input, fewer than
+        # when a fold actually crosses.
+        assert len(refined_far.vertices) > original_count
+        assert len(refined_far.vertices) < len(refined_near.vertices)
 
     def test_segments_preserved(self):
         """The segment list is preserved on the refined polygon."""

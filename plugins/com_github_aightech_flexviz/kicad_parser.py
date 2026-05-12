@@ -10,6 +10,12 @@ from pathlib import Path
 from typing import Union, Iterator
 import re
 
+# Default sagitta target (mm) for adaptive arc tessellation in rendering paths.
+# Sagitta is the max deflection between an arc and its chord-approximation;
+# 0.05 mm is below typical screen resolution at PCB scale, so corners look
+# smooth without bloating vertex counts.
+RENDER_ARC_SAGITTA_MM = 0.05
+
 
 @dataclass
 class SExpr:
@@ -489,13 +495,14 @@ class KiCadPCB:
         # Use the largest as outline
         outline_segments = ordered_segments[0] if ordered_segments else []
 
-        # Generate vertices from segments (linearize arcs for compatibility)
+        # Generate vertices from segments (linearize arcs for rendering).
+        # Use adaptive sagitta tessellation so rounded corners look smooth at
+        # every radius without bloating the vertex list.
         vertices = []
         for seg in outline_segments:
             vertices.append(seg['start'])
             if seg['type'] == 'arc' and seg.get('mid'):
-                # Add intermediate points for arcs (linearized)
-                arc_verts = self._arc_to_vertices(seg, max_seg_length=2.0)
+                arc_verts = self._arc_to_vertices(seg, max_sagitta=RENDER_ARC_SAGITTA_MM)
                 vertices.extend(arc_verts[1:-1])  # Skip start (already added) and end (added by next segment)
 
         return vertices, outline_segments
@@ -568,8 +575,15 @@ class KiCadPCB:
         return all_polygons
 
     def _arc_to_vertices(self, arc_seg: dict, segments_per_90deg: int = 8,
-                         max_seg_length: float = 0.0) -> list[tuple[float, float]]:
-        """Convert an arc segment to linearized vertices."""
+                         max_seg_length: float = 0.0,
+                         max_sagitta: float = 0.0) -> list[tuple[float, float]]:
+        """Convert an arc segment to linearized vertices.
+
+        max_sagitta (mm), when > 0, drives adaptive tessellation: the number
+        of segments is chosen so each chord deflects from the true arc by at
+        most max_sagitta. Tight corners get more samples, gentle curves get
+        fewer. Takes precedence over max_seg_length and segments_per_90deg.
+        """
         import math
 
         start = arc_seg['start']
@@ -581,7 +595,8 @@ class KiCadPCB:
 
         # Use the existing linearize_arc logic
         arc_segments = self._linearize_arc(start, mid, end, segments_per_90deg,
-                                           max_seg_length=max_seg_length)
+                                           max_seg_length=max_seg_length,
+                                           max_sagitta=max_sagitta)
 
         # Extract vertices from segments
         vertices = [start]
@@ -596,7 +611,8 @@ class KiCadPCB:
         mid: tuple[float, float],
         end: tuple[float, float],
         segments_per_90deg: int = 8,
-        max_seg_length: float = 0.0
+        max_seg_length: float = 0.0,
+        max_sagitta: float = 0.0
     ) -> list[tuple[tuple[float, float], tuple[float, float]]]:
         """
         Linearize an arc defined by 3 points into line segments.
@@ -606,9 +622,12 @@ class KiCadPCB:
             mid: Middle point of arc (on the arc)
             end: End point of arc
             segments_per_90deg: Number of segments per 90 degrees of arc
-                (used only when max_seg_length is 0)
-            max_seg_length: If > 0, use adaptive tessellation based on arc
-                length instead of fixed segments_per_90deg.
+                (used only when max_seg_length and max_sagitta are both 0)
+            max_seg_length: If > 0 and max_sagitta is 0, use chord-length
+                based tessellation.
+            max_sagitta: If > 0, use adaptive sagitta-based tessellation —
+                each chord deflects from the true arc by at most this many
+                mm. Takes precedence over the other tessellation modes.
 
         Returns:
             List of line segments [(p1, p2), ...]
@@ -676,7 +695,17 @@ class KiCadPCB:
             direction = -1
 
         # Calculate number of segments
-        if max_seg_length > 0:
+        if max_sagitta > 0 and radius > 0:
+            # Adaptive: pick subdivision so each chord deflects from the arc
+            # by at most max_sagitta mm. sagitta s = r(1 - cos(θ/2)), so the
+            # angle per chord is θ = 2·acos(1 - s/r). Tight curves get more
+            # samples, gentle curves get fewer.
+            if max_sagitta >= radius:
+                num_segments = 2  # one chord per half-arc is enough
+            else:
+                theta_per_seg = 2.0 * math.acos(1.0 - max_sagitta / radius)
+                num_segments = max(2, int(math.ceil(total_angle / theta_per_seg)))
+        elif max_seg_length > 0:
             arc_length = radius * total_angle
             num_segments = max(2, int(math.ceil(arc_length / max_seg_length)))
         else:
@@ -1296,7 +1325,9 @@ class KiCadPCB:
                 # Plain xy points
                 for xy in pts.find_all('xy'):
                     vertices.append((xy.get_float(0), xy.get_float(1)))
-                # Arc sub-elements (KiCad 10+)
+                # Arc sub-elements (KiCad 10+). Tessellate to adaptive sagitta
+                # so the polygon's vertex list reflects the actual curvature
+                # (rendering uses .vertices, while STEP export uses .segments).
                 for arc in pts.find_all('arc'):
                     a_start = arc['start']
                     a_mid = arc['mid']
@@ -1318,6 +1349,13 @@ class KiCadPCB:
                                 uy = ((ax*ax + ay*ay) * (cx - bx) + (bx*bx + by*by) * (ax - cx) + (cx*cx + cy*cy) * (bx - ax)) / d
                                 center = (ux, uy)
                                 radius = math.sqrt((ax - ux)**2 + (ay - uy)**2)
+                            # Add intermediate samples along the arc so the
+                            # rendered polygon shows the curve.
+                            arc_verts = self._arc_to_vertices(
+                                {'start': sp, 'mid': mp, 'end': ep},
+                                max_sagitta=RENDER_ARC_SAGITTA_MM,
+                            )
+                            vertices.extend(arc_verts[1:-1])
                         segments.append({
                             'type': 'arc', 'start': sp, 'end': ep,
                             'mid': mp, 'center': center, 'radius': radius,
@@ -1364,9 +1402,14 @@ class KiCadPCB:
                 radius = math.sqrt((ex - cx) ** 2 + (ey - cy) ** 2)
 
                 if radius > 0:
-                    # Adaptive: ~2mm max chord length, minimum 8 segments
-                    circumference = 2 * math.pi * radius
-                    num_segments = max(8, int(math.ceil(circumference / 2.0)))
+                    # Adaptive sagitta: N segments such that each chord
+                    # deflects from the circle by at most RENDER_ARC_SAGITTA_MM.
+                    # θ = 2·acos(1 - s/r) per segment over a full 2π.
+                    if RENDER_ARC_SAGITTA_MM < radius:
+                        theta = 2.0 * math.acos(1.0 - RENDER_ARC_SAGITTA_MM / radius)
+                        num_segments = max(8, int(math.ceil(2.0 * math.pi / theta)))
+                    else:
+                        num_segments = 8
                     vertices = []
                     for i in range(num_segments):
                         angle = 2 * math.pi * i / num_segments
@@ -1495,7 +1538,18 @@ class KiCadPCB:
             if hasattr(self, '_order_segments_with_arcs'):
                 ordered = self._order_segments_with_arcs(raw_segments)
                 for seg_list in ordered:
-                    verts = [s['start'] for s in seg_list]
+                    # Build a vertex list that includes intermediate samples
+                    # along each arc, so rendering shows the curvature. The
+                    # structural seg_list (with arc center/radius/mid) is kept
+                    # on the polygon for STEP export.
+                    verts = []
+                    for s in seg_list:
+                        verts.append(s['start'])
+                        if s['type'] == 'arc' and s.get('mid'):
+                            arc_verts = self._arc_to_vertices(
+                                s, max_sagitta=RENDER_ARC_SAGITTA_MM
+                            )
+                            verts.extend(arc_verts[1:-1])
                     if len(verts) >= 3:
                         polygons.append(LayerPolygon(
                             vertices=verts, layer=layer, segments=seg_list))
@@ -1505,7 +1559,8 @@ class KiCadPCB:
                 for s in raw_segments:
                     if s['type'] == 'arc' and s.get('mid'):
                         lin_segs.extend(self._linearize_arc(
-                            s['start'], s['mid'], s['end']))
+                            s['start'], s['mid'], s['end'],
+                            max_sagitta=RENDER_ARC_SAGITTA_MM))
                     else:
                         lin_segs.append((s['start'], s['end']))
                 for vertices in self._order_segments(lin_segs):
