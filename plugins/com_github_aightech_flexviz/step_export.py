@@ -1010,8 +1010,11 @@ def _compute_component_placement(comp, model_info, thickness, regions):
         x, y, z = ry(x, y, z)
         x, y, z = rx(x, y, z)
         # 3. Model offset
+        # KiCad stores model offset in the model's Y-up frame (OpenGL/STEP/VRML
+        # convention used by KiCad's 3D viewer); this transform chain operates
+        # in the PCB's Y-down frame, so the Y component must be negated.
         x += model_info.offset[0]
-        y += model_info.offset[1]
+        y -= model_info.offset[1]
         z += model_info.offset[2]
         # 4. Component rotation
         x, y, z = comp_rz(x, y, z)
