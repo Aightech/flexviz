@@ -739,6 +739,15 @@ def _parse_wrl_legacy(content: str, wrl_scale: float, path: str = "unknown") -> 
 # Main Loader Function - Graceful Degradation
 # =============================================================================
 
+# Path-keyed cache for loaded models. Boards routinely place 10+ instances of
+# the same footprint, so without this every duplicate would re-parse the same
+# STEP/WRL file (a STEP load takes ~100-200 ms with OCC). Cached results —
+# including None for failed loads — are returned in microseconds. Cache lives
+# for the process lifetime; size is bounded by the number of unique model
+# files referenced in the board (typically ≪ 200).
+_loaded_model_cache: dict[str, Optional["LoadedModel"]] = {}
+
+
 def load_model(path: str) -> Optional[LoadedModel]:
     """
     Load a 3D model from file using best available loader.
@@ -748,39 +757,65 @@ def load_model(path: str) -> Optional[LoadedModel]:
     2. For WRL files: trimesh → native parser
     3. Returns None if all loaders fail (caller uses placeholder)
 
+    Loaded models are cached by path so repeated references to the same
+    footprint (e.g. many instances of the same passive) don't re-parse the
+    file. The returned LoadedModel is intended to be treated as read-only
+    by callers (each caller transforms its own copy of the vertices).
+
     Args:
         path: Path to model file
 
     Returns:
         LoadedModel or None if loading fails
     """
+    cached = _loaded_model_cache.get(path, _MISSING)
+    if cached is not _MISSING:
+        return cached
+
+    result = _load_model_uncached(path)
+    _loaded_model_cache[path] = result
+    return result
+
+
+# Sentinel distinguishes "not yet attempted" from "attempted, returned None".
+_MISSING = object()
+
+
+def _load_model_uncached(path: str) -> Optional[LoadedModel]:
+    """Original load_model body, without the per-path cache."""
     ext = os.path.splitext(path)[1].lower()
+    primary_exists = os.path.isfile(path)
 
     # STEP files
     if ext in ('.step', '.stp'):
-        # Try OCC first (best for STEP)
-        if _occ_available:
-            result = load_step_occ(path)
-            if result:
-                return result
+        if primary_exists:
+            # Try OCC first (best for STEP)
+            if _occ_available:
+                result = load_step_occ(path)
+                if result:
+                    return result
 
-        # Try trimesh (needs cascadio for STEP)
-        if _trimesh_available:
-            result = load_model_trimesh(path)
-            if result:
-                return result
+            # Try trimesh (needs cascadio for STEP)
+            if _trimesh_available:
+                result = load_model_trimesh(path)
+                if result:
+                    return result
 
-        # Fallback: try WRL version (KiCad often provides both)
+        # Fallback: try WRL version (KiCad often provides both, and a
+        # missing .step may still have a sibling .wrl).
         wrl_path = os.path.splitext(path)[0] + '.wrl'
-        if os.path.exists(wrl_path):
+        if os.path.isfile(wrl_path):
             result = parse_wrl_native(wrl_path)
             if result:
                 return result
 
         return None
 
-    # WRL/VRML files
+    # WRL/VRML files — no fallback location worth trying if the file is gone.
     if ext in ('.wrl', '.vrml'):
+        if not primary_exists:
+            return None
+
         # Try trimesh first (better material handling)
         if _trimesh_available:
             result = load_model_trimesh(path)
@@ -794,7 +829,9 @@ def load_model(path: str) -> Optional[LoadedModel]:
 
         return None
 
-    # Other formats - try trimesh
+    # Other formats - try trimesh, but only if the file is actually there.
+    if not primary_exists:
+        return None
     if _trimesh_available:
         return load_model_trimesh(path)
 

@@ -8,8 +8,42 @@ Requires PyOpenGL to be installed in KiCad's Python environment.
 import os
 import sys
 import threading
+import time
 import wx
 import wx.glcanvas as glcanvas
+
+# Lightweight profiling — always writes wall-clock timestamps for each labelled
+# phase of the viewer load to ~/.cache/flexviz/profile.log. The file is
+# rewritten at the start of each viewer open, so it always reflects the most
+# recent session. IPC plugins run as subprocesses (stdout doesn't reach the
+# launching terminal), so a log file is the reliable channel. Overhead is
+# well under 1 ms total across the ~15 ticks per open.
+_PROFILE_LOG = os.path.join(
+    os.path.expanduser("~"), ".cache", "flexviz", "profile.log"
+)
+_PROFILE_T0 = None
+_PROFILE_FILE = None
+
+
+def _ptick(label: str) -> None:
+    """Record a profile timestamp to the log file."""
+    global _PROFILE_T0, _PROFILE_FILE
+    now = time.perf_counter()
+    if _PROFILE_T0 is None:
+        _PROFILE_T0 = now
+        try:
+            os.makedirs(os.path.dirname(_PROFILE_LOG), exist_ok=True)
+            _PROFILE_FILE = open(_PROFILE_LOG, "w", buffering=1)  # line-buffered
+            _PROFILE_FILE.write(f"# flexviz profile pid={os.getpid()}\n")
+        except Exception:
+            _PROFILE_FILE = None
+    if _PROFILE_FILE is None:
+        return
+    elapsed_ms = (now - _PROFILE_T0) * 1000.0
+    try:
+        _PROFILE_FILE.write(f"[flexviz {elapsed_ms:8.1f} ms] {label}\n")
+    except Exception:
+        pass
 
 # Check for PyOpenGL and provide helpful error message if missing
 try:
@@ -123,6 +157,18 @@ try:
     from .step_export import board_to_step_native
 except ImportError:
     from step_export import board_to_step_native
+
+# OCP backend (preferred when available — exact B-Rep via build123d)
+try:
+    from .step_export_ocp import board_to_step_ocp, is_ocp_available
+except ImportError:
+    try:
+        from step_export_ocp import board_to_step_ocp, is_ocp_available
+    except ImportError:
+        def board_to_step_ocp(*a, **kw):
+            raise ImportError("build123d required")
+        def is_ocp_available():
+            return False
 
 
 class GLCanvas(glcanvas.GLCanvas):
@@ -885,6 +931,7 @@ class FlexViewerFrame(wx.Frame):
     def __init__(self, parent=None, board_geometry=None, fold_markers=None,
                  config: FlexConfig = None, pcb: KiCadPCB = None, pcb_filepath: str = None,
                  kicad_ipc=None):
+        _ptick("FlexViewerFrame.__init__ start")
         super().__init__(
             parent,
             title="Flex PCB Viewer",
@@ -927,12 +974,33 @@ class FlexViewerFrame(wx.Frame):
         if not self.available_layers:
             self.available_layers = ["User.1", "User.2", "User.3", "User.4"]
 
+        # Track which layers have valid built meshes (used to decide whether a
+        # checkbox toggle can do a fast visibility-flip or needs to rebuild
+        # that one layer). Topology-changing operations (update_mesh) clear
+        # this set; deliver() adds to it as builds finish.
+        self._layers_built = set()
+        # Cache of regions used by the most recent build, so focused
+        # single-layer rebuilds (e.g. toggling Show 3D Models) can reuse them.
+        self._cached_regions = None
+        self._cached_active_regions = None
+        self._cached_stiffeners = None
+
+        _ptick("init_ui begin")
         self.init_ui()
+        _ptick("init_ui end")
+        # Status bar for build progress feedback ("Loading 3D models 100/563", etc.)
+        self.CreateStatusBar()
+        self.SetStatusText("Ready")
         self.Centre()
 
         # Defer initial mesh build until after the frame is shown,
         # so the GUI appears immediately and layers load progressively.
         wx.CallAfter(self.update_mesh)
+        _ptick("FlexViewerFrame.__init__ end (frame shown next)")
+
+    def _set_status(self, text: str) -> None:
+        """Thread-safe status-bar update. Safe to call from any thread."""
+        wx.CallAfter(self.SetStatusText, text)
 
     def init_ui(self):
         """Initialize the UI."""
@@ -1259,43 +1327,84 @@ class FlexViewerFrame(wx.Frame):
         self._mesh_generation += 1
         generation = self._mesh_generation
 
-        # Clear canvas for new generation
-        self.canvas.set_layer_meshes({}, visibility)
+        # A full rebuild invalidates "what's been built". Hide layers that
+        # should not be visible in this pass (cheap visibility-flip; the
+        # old mesh stays in place so it doesn't blink, and the new mesh
+        # will replace it as soon as the bg thread is done with it).
+        self._layers_built = set()
+        for layer_name, visible in visibility.items():
+            self.canvas.set_layer_visible(layer_name, visible)
 
         viewer_self = self  # capture for background thread
+        progress = lambda text: viewer_self._set_status(text)
+
+        _ptick("update_mesh: dispatching background thread")
+        self._set_status("Building geometry…")
 
         def deliver(layer_name, mesh):
             """Post a layer to the canvas (called via wx.CallAfter)."""
             if generation != viewer_self._mesh_generation:
                 return  # superseded by a newer rebuild
             viewer_self.canvas.set_single_layer(layer_name, mesh, visibility.get(layer_name, False))
+            if mesh and getattr(mesh, 'vertices', None):
+                viewer_self._layers_built.add(layer_name)
+            _ptick(f"layer painted: {layer_name}")
 
         def background_build():
-            """Build all layers sequentially in a background thread."""
+            """Build all layers sequentially in a background thread.
+
+            Hidden layers are skipped entirely — neither built nor delivered —
+            so the existing canvas content for them stays in place (no blink)
+            and on_display_option_changed can spawn a focused rebuild later
+            when the user actually wants them. self._layers_built tracks which
+            layers actually have current data.
+            """
             try:
+                _ptick("bg: compute_regions start")
                 regions, active_regions = compute_regions(
                     board, markers, num_subs, bend_enabled
                 )
+                _ptick("bg: compute_regions done")
+                # Cache regions for focused single-layer rebuilds.
+                viewer_self._cached_regions = regions
+                viewer_self._cached_active_regions = active_regions
+                viewer_self._cached_stiffeners = stiffeners
 
                 # Board first — it auto-centers the camera
+                _ptick("bg: build_board_layer start")
                 mesh = build_board_layer(board, markers, 1.0, num_subs, debug_reg, bend_enabled)
+                _ptick("bg: build_board_layer done")
                 wx.CallAfter(deliver, 'board', mesh)
 
-                # Remaining layers — deliver each as soon as ready
-                for name, fn in [
-                    ('traces', lambda: build_traces_layer(board, active_regions, markers, num_subs)),
-                    ('pads', lambda: build_pads_layer(board, active_regions)),
-                    ('components', lambda: build_components_layer(board, active_regions)),
-                    ('stiffeners', lambda: build_stiffeners_layer(board, regions, stiffeners, bend_enabled)),
-                    ('3d_models', lambda: build_3d_models_layer(board, active_regions, pcb_dir, pcb)),
-                ]:
+                # Order: cheap-and-on-by-default first so they paint quickly,
+                # then expensive opt-in layers. Each entry: (name, builder).
+                builders = [
+                    ('stiffeners', lambda p=None: build_stiffeners_layer(board, regions, stiffeners, bend_enabled)),
+                    ('components', lambda p=None: build_components_layer(board, active_regions)),
+                    ('pads', lambda p=None: build_pads_layer(board, active_regions)),
+                    ('traces', lambda p=None: build_traces_layer(board, active_regions, markers, num_subs)),
+                    ('3d_models', lambda p=progress: build_3d_models_layer(board, active_regions, pcb_dir, pcb, on_progress=p)),
+                ]
+                for name, fn in builders:
                     if generation != viewer_self._mesh_generation:
                         return  # new rebuild started, abandon this one
+                    if not visibility.get(name, False):
+                        # Layer is hidden — skip the build entirely. Leave any
+                        # existing canvas content for this layer alone (the
+                        # canvas visibility flag is already off). When the
+                        # user later turns this layer on, on_display_option_changed
+                        # decides whether to flip visibility or spawn a focused
+                        # rebuild based on _layers_built.
+                        _ptick(f"bg: skip {name} (hidden)")
+                        continue
+                    _ptick(f"bg: build {name} start")
+                    progress(f"Building {name}…")
                     try:
                         layer_mesh = fn()
                     except Exception as e:
                         print(f"Warning: failed to build {name}: {e}")
                         layer_mesh = Mesh()
+                    _ptick(f"bg: build {name} done")
                     wx.CallAfter(deliver, name, layer_mesh)
 
                 # Precompute angle-independent data for fast retransform on
@@ -1303,11 +1412,13 @@ class FlexViewerFrame(wx.Frame):
                 # and this generation is still current.
                 if bend_enabled and generation == viewer_self._mesh_generation:
                     try:
+                        _ptick("bg: precompute_all_layers start")
                         precomputed = precompute_all_layers(
                             board, markers, num_subs,
                             subdivide_length=1.0,
                             debug_regions=debug_reg,
                         )
+                        _ptick("bg: precompute_all_layers done")
                         # Store on main thread to avoid races
                         def _cache_precomputed():
                             if generation == viewer_self._mesh_generation:
@@ -1315,8 +1426,11 @@ class FlexViewerFrame(wx.Frame):
                         wx.CallAfter(_cache_precomputed)
                     except Exception as e:
                         print(f"Warning: precompute failed (will use full rebuild): {e}")
+                if generation == viewer_self._mesh_generation:
+                    progress("Ready")
             except Exception as e:
                 print(f"Warning: background mesh build failed: {e}")
+                progress(f"Build failed: {e}")
 
         threading.Thread(target=background_build, daemon=True).start()
 
@@ -1547,23 +1661,106 @@ class FlexViewerFrame(wx.Frame):
         self.canvas.set_wireframe(self.cb_wireframe.GetValue())
 
     def on_display_option_changed(self, event):
-        """Handle display option change — toggle layer visibility without rebuild."""
+        """Toggle layer visibility.
+
+        For each requested-visible layer:
+        - If already built: flip visibility (cheap, instant, no blink).
+        - If not yet built: spawn a focused rebuild of just that layer
+          (so the rest of the scene stays on screen).
+        Hidden layers: flip visibility to False; their content stays cached
+        so re-enabling them later is instant.
+        """
         if not self.canvas._layers:
-            # First time or legacy mode: do full rebuild
+            # First-ever build — full rebuild needed to bootstrap the scene.
             self.update_mesh()
             return
 
         show_3d = self.cb_3d_models.GetValue() if hasattr(self, 'cb_3d_models') else False
         show_comp = self.cb_components.GetValue() if hasattr(self, 'cb_components') else False
+        new_vis = {
+            'traces': self.cb_traces.GetValue() if hasattr(self, 'cb_traces') else False,
+            'pads': self.cb_pads.GetValue() if hasattr(self, 'cb_pads') else False,
+            'components': show_comp and not show_3d,
+            '3d_models': show_3d,
+            'stiffeners': self.cb_stiffeners.GetValue() if hasattr(self, 'cb_stiffeners') else True,
+        }
 
-        self.canvas.set_layer_visible('traces', self.cb_traces.GetValue() if hasattr(self, 'cb_traces') else False)
-        self.canvas.set_layer_visible('pads', self.cb_pads.GetValue() if hasattr(self, 'cb_pads') else False)
-        self.canvas.set_layer_visible('components', show_comp and not show_3d)
-        self.canvas.set_layer_visible('3d_models', show_3d)
-        self.canvas.set_layer_visible('stiffeners', self.cb_stiffeners.GetValue() if hasattr(self, 'cb_stiffeners') else True)
+        for name, want_visible in new_vis.items():
+            if want_visible and name not in self._layers_built:
+                # Layer was skipped on the last build. Build only this one,
+                # leaving the rest of the canvas alone.
+                self._rebuild_layer(name)
+                # Continue: other layers can still flip visibility immediately.
+            self.canvas.set_layer_visible(name, want_visible)
 
         # Update stiffener status label
         self._update_stiffener_status()
+
+    def _rebuild_layer(self, name: str) -> None:
+        """Build a single named layer in a background thread and deliver it.
+
+        Reuses cached regions/active_regions/stiffeners from the last full
+        build so we don't redo the (slow) region decomposition. Marks the
+        layer as built when delivery succeeds. Status bar updates throughout.
+        """
+        if self._cached_regions is None or self._cached_active_regions is None:
+            # No region cache yet — fall back to a full rebuild.
+            self.update_mesh()
+            return
+
+        board = self.board_geometry
+        markers = list(self.fold_markers)
+        bend_enabled = self.cb_bend.GetValue() if hasattr(self, 'cb_bend') else True
+        num_subs = self.config.bend_subdivisions if hasattr(self, 'config') else 1
+        pcb_dir = os.path.dirname(self.pcb_filepath) if self.pcb_filepath else None
+        pcb = self.pcb
+        regions = self._cached_regions
+        active_regions = self._cached_active_regions
+        stiffeners = self._cached_stiffeners
+
+        viewer_self = self
+        progress = lambda text: viewer_self._set_status(text)
+        # Capture a per-rebuild generation token so a fresh full update_mesh
+        # supersedes this work cleanly.
+        if not hasattr(self, '_mesh_generation'):
+            self._mesh_generation = 0
+        my_gen = self._mesh_generation
+
+        builders = {
+            'stiffeners': lambda: build_stiffeners_layer(board, regions, stiffeners, bend_enabled),
+            'components': lambda: build_components_layer(board, active_regions),
+            'pads': lambda: build_pads_layer(board, active_regions),
+            'traces': lambda: build_traces_layer(board, active_regions, markers, num_subs),
+            '3d_models': lambda: build_3d_models_layer(
+                board, active_regions, pcb_dir, pcb, on_progress=progress
+            ),
+        }
+        if name not in builders:
+            return
+
+        def worker():
+            try:
+                _ptick(f"focused-rebuild: {name} start")
+                progress(f"Building {name}…")
+                layer_mesh = builders[name]()
+                _ptick(f"focused-rebuild: {name} done")
+
+                def _deliver():
+                    if my_gen != viewer_self._mesh_generation:
+                        return  # superseded by a full rebuild
+                    viewer_self.canvas.set_single_layer(
+                        name, layer_mesh,
+                        visible=True,
+                    )
+                    if layer_mesh and getattr(layer_mesh, 'vertices', None):
+                        viewer_self._layers_built.add(name)
+                    progress("Ready")
+                wx.CallAfter(_deliver)
+            except Exception as e:
+                print(f"Warning: focused rebuild of {name} failed: {e}")
+                progress(f"Build failed: {e}")
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def on_settings_changed(self, event):
         """Handle PCB settings change."""
@@ -1846,7 +2043,12 @@ class FlexViewerFrame(wx.Frame):
                     if hasattr(self, 'pcb') and self.pcb and hasattr(self, 'config') and self.config.has_stiffener:
                         stiffeners = extract_stiffeners(self.pcb, self.config)
 
-                    success = board_to_step_native(
+                    # Prefer OCP backend when in IPC mode (out-of-process)
+                    export_fn = board_to_step_native
+                    if is_ocp_available() and getattr(self, 'kicad_ipc', None):
+                        export_fn = board_to_step_ocp
+
+                    success = export_fn(
                         self.board_geometry,
                         self.fold_markers or [],
                         path,

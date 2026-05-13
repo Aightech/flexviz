@@ -318,15 +318,86 @@ def build_components_layer(board, active_regions, component_height=2.0):
     return mesh
 
 
-def build_3d_models_layer(board, active_regions, pcb_dir=None, pcb=None):
-    """Build the 3D models mesh."""
+def build_3d_models_layer(board, active_regions, pcb_dir=None, pcb=None,
+                          on_progress=None):
+    """Build the 3D models mesh.
+
+    Args:
+        on_progress: optional callable(str) — invoked every PROGRESS_EVERY
+            components with a human-readable progress string like
+            "Loading 3D models: 150/563 (84 loaded, 66 missing)". Used to
+            drive the viewer's status bar so the GUI shows life during
+            the long STEP/WRL load.
+
+    Diagnostics are also written to ~/.cache/flexviz/profile.log via _ptick.
+    """
+    try:
+        from .viewer import _ptick
+    except Exception:
+        try:
+            from viewer import _ptick
+        except Exception:
+            _ptick = lambda _: None
+
     mesh = Mesh()
-    if pcb_dir:
-        for comp in board.components:
-            model_mesh = create_component_3d_model_mesh(
-                comp, pcb_dir, board.thickness, active_regions, pcb
+    if not pcb_dir:
+        _ptick("3d_models: SKIPPED — pcb_dir is empty/None (board file path unknown)")
+        if on_progress:
+            on_progress("3D models: no PCB directory (cannot resolve model paths)")
+        mesh.compute_normals()
+        return mesh
+
+    n_comps = len(board.components) if board.components else 0
+    _ptick(f"3d_models: pcb_dir={pcb_dir} components={n_comps}")
+    if on_progress:
+        on_progress(f"Loading 3D models: 0/{n_comps}…")
+
+    import time as _time
+    n_no_models = 0
+    n_succeeded = 0
+    n_empty_mesh = 0
+    PROGRESS_EVERY = 25
+    for i, comp in enumerate(board.components):
+        if i and (i % PROGRESS_EVERY == 0):
+            msg = (
+                f"3d_models: progress {i}/{n_comps} "
+                f"(loaded={n_succeeded} failed={n_empty_mesh} "
+                f"no_ref={n_no_models})"
             )
+            _ptick(msg)
+            if on_progress:
+                on_progress(
+                    f"Loading 3D models: {i}/{n_comps} "
+                    f"({n_succeeded} loaded, {n_empty_mesh} missing)"
+                )
+            # Release the GIL briefly so the wx main thread can pump events.
+            # OCC's STEP loader runs in C without releasing the GIL, which
+            # starves the GUI; sleep(0) gives it a chance to draw and stay
+            # responsive between component loads.
+            _time.sleep(0)
+        if not getattr(comp, 'models', None):
+            n_no_models += 1
+            continue
+        model_mesh = create_component_3d_model_mesh(
+            comp, pcb_dir, board.thickness, active_regions, pcb
+        )
+        if model_mesh.vertices:
+            n_succeeded += 1
             mesh.merge(model_mesh)
+        else:
+            n_empty_mesh += 1
+
+    _ptick(
+        f"3d_models: DONE loaded={n_succeeded} "
+        f"empty/failed={n_empty_mesh} no_models_ref={n_no_models} "
+        f"total_verts={len(mesh.vertices)}"
+    )
+    if on_progress:
+        on_progress(
+            f"3D models: {n_succeeded} loaded, "
+            f"{n_empty_mesh} missing, "
+            f"{n_no_models} components have no model"
+        )
     mesh.compute_normals()
     return mesh
 

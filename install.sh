@@ -123,8 +123,9 @@ if [[ " ${MODES[*]} " =~ " ipc " ]]; then
     echo "IPC mode:"
     echo "  1. Enable the API: Preferences -> Plugins -> Enable API"
     echo "  2. Restart KiCad PCB Editor"
-    echo "  3. The plugin appears in Tools -> External Plugins"
-    echo "  Note: kicad-python is auto-installed into the plugin's venv by KiCad"
+    echo "  Note: IPC toolbar buttons work on KiCad >= 10.0.2."
+    echo "        Earlier 10.0.x releases had a regression where buttons did"
+    echo "        not render; if you don't see them, update KiCad."
     echo ""
 fi
 

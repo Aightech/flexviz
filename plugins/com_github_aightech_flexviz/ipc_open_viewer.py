@@ -35,8 +35,27 @@ def main():
     board_str = board.get_as_string()
     pcb = KiCadPCB.parse(board_str)
 
+    # Resolve the FULL board path so per-PCB config (<name>.flex_config.json)
+    # loads and 3D model paths (relative to the .kicad_pcb directory) resolve.
+    # board.name returns only the basename over IPC; the full directory comes
+    # from board.document.project.path.
+    board_path = None
+    try:
+        doc = board.document
+        proj_path = doc.project.path
+        filename = doc.board_filename or board.name
+        if proj_path and filename:
+            board_path = os.path.join(proj_path, filename)
+    except Exception:
+        pass
+    if not board_path:
+        # Fallback: at least give viewer the basename so per-PCB config can
+        # work in the cwd. 3D model loading will still fail without a dir.
+        n = getattr(board, "name", None)
+        board_path = n if n else None
+
     geom = extract_geometry(pcb)
-    config = FlexConfig()  # Default config in IPC mode
+    config = FlexConfig.load_for_pcb(board_path) if board_path else FlexConfig()
     markers = detect_fold_markers(pcb, layer=config.marker_layer)
 
     # Check OpenGL availability before importing viewer
@@ -63,8 +82,8 @@ def main():
     frame = FlexViewerFrame(
         None, geom, markers,
         pcb=pcb,
-        pcb_filepath=None,  # No file path in IPC mode
-        kicad_ipc=kicad,    # Pass IPC connection for refresh
+        pcb_filepath=board_path,  # From board.name (IPC); None for unsaved boards
+        kicad_ipc=kicad,          # Pass IPC connection for refresh
     )
     frame.Show()
     app.MainLoop()
